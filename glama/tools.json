@@ -2,13 +2,13 @@
   {
     "name": "check_api_status",
     "title": "Is this API / provider down right now?",
-    "description": "Check if an AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio... ~40 total) is up, degraded or down right now. Use BEFORE calling a provider's API, or right after you get 5xx/429/timeout errors, to decide whether to retry, wait or switch to a fallback. Returns a one-line summary first, then verdict, recommended_action, open incidents, affected components, checked_at and freshness (checked every ~4 min). Example: {\"provider\":\"openai\"}. Free within the daily quota, then $0.003 via x402. Alias: get_status.",
+    "description": "Check whether one AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio, ~40 total) is up, degraded, or down right now. Use before calling that provider, or right after 5xx/429/timeouts, to choose retry, wait, or a fallback. Not for a model id (check_model_deprecation), the filtered change feed (list_recent_api_changes), or the daily rollup (get_digest). Returns summary, verdict (up|degraded|partially down|down|unknown), recommended_action, incidents, affected_components, checked_at, and freshness; status is rechecked about every 4 minutes. An unknown provider id returns 404 unknown_provider. Example: {\"provider\":\"openai\"}. Free within the daily quota, then $0.003 via x402. Alias: get_status.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "provider": {
           "type": "string",
-          "description": "Provider id (lowercase). Examples: openai, anthropic, google-ai, mistral, groq, github, stripe, cloudflare. Full list: list_providers.",
+          "description": "Lowercase provider id from list_providers, not the display name. Examples: openai, anthropic, google-ai, mistral, groq, github, stripe, cloudflare.",
           "examples": [
             "openai",
             "anthropic",
@@ -31,13 +31,15 @@
   {
     "name": "check_model_deprecation",
     "title": "Is this model deprecated, and what replaces it?",
-    "description": "Check if an LLM model id is active, deprecated or retired, its shutdown date, and the recommended replacement, from the provider's own deprecation page (OpenAI, Anthropic, Google, etc.). Use before hard-coding or calling a model, or when a model call fails with \"model not found / deprecated\". Returns summary first, then verdict, recommended_action (keep_using | plan_migration | switch_now | verify_with_provider), replacement, shutdown_date, evidence rows and freshness. Example: {\"model\":\"gpt-4-0613\"}. Free within the daily quota, then $0.003 via x402. Alias: get_model (param \"id\").",
+    "description": "Check whether one LLM model id is active, deprecated, or retired, plus its shutdown date and replacement, from that provider's deprecation page (OpenAI, Anthropic, Google, and other tracked LLM vendors). Use before hard-coding or calling a model, or when a call fails with model-not-found. Not for API uptime (check_api_status) and not for a retirement feed (list_recent_api_changes with kind model_retirement, or get_digest). Returns summary, verdict (active|deprecated|retired|unknown), recommended_action (keep_using|plan_migration|switch_now|verify_with_provider), replacement, shutdown_date, evidence, and freshness; pages are re-read every few hours. An unlisted id is verdict unknown, not an error; longer than 120 characters returns 400 bad_model_id. Example: {\"model\":\"gpt-4-0613\"}. Free within the daily quota, then $0.003 via x402. Alias: get_model (param id).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "model": {
           "type": "string",
-          "description": "Model id as used in the API call. Examples: gpt-4o, claude-3-opus-20240229, gemini-1.5-pro.",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Exact API model id, not a display name or provider id. 1–120 characters; lowercased, and a leading models/ is stripped. Examples: gpt-4-0613, claude-3-opus-20240229, gemini-1.5-pro.",
           "examples": [
             "gpt-4-0613",
             "claude-3-opus-20240229"
@@ -45,7 +47,9 @@
         },
         "id": {
           "type": "string",
-          "description": "Deprecated alias of model."
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Deprecated alias of model, only for the get_model tool name. Same 1–120 character API id. Ignored when model is also set."
         }
       }
     },
@@ -60,17 +64,24 @@
   {
     "name": "list_recent_api_changes",
     "title": "What changed recently in AI/dev APIs?",
-    "description": "List recent breaking or notable changes across AI and developer APIs: outages and recoveries, deprecation-page edits, model retirements and pricing-page edits. Use to answer \"did anything change that could break my integration?\" or to explain sudden errors. Returns summary first, then the change list with timestamps and source links. Example: {\"provider\":\"anthropic\",\"kind\":\"model_retirement\"}. Free within the daily quota, then $0.01 via x402. Alias: get_changes.",
+    "description": "List the on-demand feed of recent AI and developer API changes (status flips, deprecation-page edits, model retirements, pricing-page edits). Use for a chosen window, one provider, or one kind, when explaining sudden breakage. Not for live up/down (check_api_status) and not for the once-a-day digest, which also covers MCP server breakage (get_digest). Returns summary, count, freshness, and changes[] with provider, kind, title, detail, source, and at, newest first. Status rows arrive within about 4 minutes; doc-page rows every few hours. A limit above 500 is clamped to 500; an unknown provider returns an empty list, not an error. Example: {\"provider\":\"anthropic\",\"kind\":\"model_retirement\"}. Free within the daily quota, then $0.01 via x402. Alias: get_changes.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "since": {
           "type": "string",
-          "description": "ISO 8601 timestamp; default 7 days ago. Example: 2026-10-01T00:00:00Z"
+          "description": "Exclusive lower bound compared to each change's at. ISO 8601 UTC. Example: 2026-10-01T00:00:00Z. Omit for 7 days ago.",
+          "examples": [
+            "2026-10-01T00:00:00Z"
+          ]
         },
         "provider": {
           "type": "string",
-          "description": "Optional provider id, e.g. openai"
+          "description": "Optional lowercase provider id from list_providers, e.g. openai or anthropic. Omit for every provider.",
+          "examples": [
+            "openai",
+            "anthropic"
+          ]
         },
         "kind": {
           "type": "string",
@@ -80,11 +91,17 @@
             "model_retirement",
             "pricing"
           ],
-          "description": "Optional change type filter"
+          "description": "Optional type filter. status = provider state flips; deprecations = deprecation-page line edits; model_retirement = a model id became deprecated or retired; pricing = pricing-page line edits. Omit for all four.",
+          "examples": [
+            "model_retirement"
+          ]
         },
         "limit": {
           "type": "number",
-          "description": "Max items, default 100, max 500"
+          "description": "How many changes to return, newest first. Positive integer. Omit for 100.",
+          "examples": [
+            100
+          ]
         }
       }
     },
@@ -99,7 +116,7 @@
   {
     "name": "list_providers",
     "title": "List tracked API providers",
-    "description": "List the ~40 AI and developer API providers Upstream tracks with their current state (operational/degraded/outage) and checked_at. Use to find the right provider id for check_api_status, or for a quick all-providers health overview. Free.",
+    "description": "List every AI and developer API provider Upstream tracks (~40) with id, name, category, current state, checked_at, and status page. Use to pick a provider id for check_api_status, or for one all-providers health pass. Not for one provider's incidents (check_api_status) and not for what changed (list_recent_api_changes or get_digest). No parameters. Always free; does not spend the daily quota. State is refreshed about every 4 minutes. Returns {count, providers:[{id, name, category, state, checked_at, status_page}]}; state is operational, degraded, partial_outage, major_outage, maintenance, or unknown.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -115,13 +132,17 @@
   {
     "name": "get_digest",
     "title": "Daily AI/dev API breaking-changes digest",
-    "description": "Daily digest (free) of AI/dev API incidents, model deprecations/retirements, pricing-page changes and breaking MCP server changes. Use for a once-a-day catch-up instead of polling. Example: {} for the latest, or {\"date\":\"2026-10-14\"}.",
+    "description": "Read one published daily breaking-changes digest: AI/dev API status flips, model deprecations and retirements, pricing-page edits, and breaking MCP server changes. Use for a once-a-day catch-up. For a filtered on-demand API feed with no MCP section, use list_recent_api_changes; for live up/down, check_api_status; for one model id, check_model_deprecation. Always free (no quota, no x402). Published once at 12:00 UTC as a frozen window since the previous issue (usually ~24h); not updated later. Omit date for the latest; a missing YYYY-MM-DD returns 404 {error:no_issue}. One issue per date, no paging. Returns {date, title, summary, window_start, window_end, published_at, markdown, data, url, sponsor:null}. data holds counts, status, open_now, model_changes, shutting_down_30d, pricing, deprecation_page_edits, and mcp (breaking, non_breaking, down, back, auth_broken, auth_fixed). markdown caps model rows, breaking MCP rows, and each MCP event kind at 30, 30, and 20; data is the full window.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "date": {
           "type": "string",
-          "description": "YYYY-MM-DD; omit for the latest issue"
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Published issue date, YYYY-MM-DD (example 2026-10-14). Omit for the latest issue. A date with no stored issue returns 404 no_issue; issues appear at 12:00 UTC.",
+          "examples": [
+            "2026-10-14"
+          ]
         }
       }
     },

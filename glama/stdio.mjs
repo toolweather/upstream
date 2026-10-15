@@ -11,7 +11,7 @@ import readline from "node:readline";
 const VERSION = "0.2.0";
 const TOOLS = JSON.parse(readFileSync(new URL("./tools.json", import.meta.url), "utf8"));
 const ALIAS = { get_status: "check_api_status", get_model: "check_model_deprecation", get_changes: "list_recent_api_changes" };
-const INSTRUCTIONS = "Use check_api_status before calling an AI/dev API or after 5xx/timeouts; check_model_deprecation before using a model id; list_recent_api_changes to explain sudden breakage. Every result starts with a one-line summary. The hosted server (https://upstream.toolweather.workers.dev/mcp) is free within the daily quota (500/day with a free key, 50/day without), then x402. This stdio process returns a sample snapshot for introspection and does not take payment or send email.";
+const INSTRUCTIONS = "Use check_api_status before calling an AI/dev API or after 5xx/timeouts; check_model_deprecation before using a model id; list_recent_api_changes for the on-demand change feed; get_digest for the once-a-day digest (it also includes MCP breakage). Every result starts with a one-line summary. The hosted server (https://upstream.toolweather.workers.dev/mcp) is free within the daily quota (500/day with a free key, 50/day without), then x402. list_providers and get_digest are always free and do not spend that quota. This stdio process returns a sample snapshot for introspection and does not take payment or send email.";
 const SAMPLE_NOTE = "sample snapshot for introspection; not a live check";
 const SERVER_INFO = { name: "upstream", title: "Upstream", version: VERSION };
 
