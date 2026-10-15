@@ -5,6 +5,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { PROVIDERS, PAGES } from "./providers.js";
 import { pageTokens, parseModels } from "./models.js";
+import { twSnapshot, buildDigest, saveDigest, digestOut, atom, subscribe, confirmOrUnsub } from "./digest.js";
 import { LLMS, openapi, SITE } from "./docs.js";
 
 const VERSION = "0.1.0";
@@ -213,6 +214,7 @@ async function notify(env, events) {
 // ---------- MCP ----------
 const TOOLS = [
   { name: "list_providers", description: "List the ~40 AI and developer API providers Upstream tracks, with their current state. Free.", inputSchema: { type: "object", properties: {} } },
+  { name: "get_digest", description: "Daily breaking-changes digest (free): AI/dev API incidents, model deprecations/retirements, pricing-page changes, breaking MCP server changes. Optional date YYYY-MM-DD, default latest.", inputSchema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD; omit for the latest issue" } } } },
   { name: "get_status", description: `Is this provider's API up right now? Current state, open incidents, affected components. Free within the daily quota, then ${PRICES.status} via x402.`, inputSchema: { type: "object", properties: { provider: { type: "string", description: "provider id from list_providers, e.g. openai, anthropic, github, stripe" } }, required: ["provider"] } },
   { name: "get_changes", description: `What changed: status transitions, deprecation-page edits, model retirements, pricing-page edits. Free within the daily quota, then ${PRICES.changes} via x402.`, inputSchema: { type: "object", properties: { since: { type: "string", description: "ISO timestamp, default 7 days ago" }, provider: { type: "string" }, kind: { type: "string", enum: ["status", "deprecations", "model_retirement", "pricing"] }, limit: { type: "number" } } } },
   { name: "get_model", description: `Is this model id active, deprecated or retired? Shutdown date and replacement, from the provider's own deprecation page ("unknown" if not explicitly listed). Free within the daily quota, then ${PRICES.model} via x402.`, inputSchema: { type: "object", properties: { id: { type: "string", description: "model id, e.g. gpt-4o, claude-3-opus-20240229, gemini-1.5-pro" } }, required: ["id"] } },
@@ -231,6 +233,7 @@ async function mcp(c, env, ctx) {
   const run = async () => name === "list_providers" ? await listProviders(env) : name === "get_status" ? await getStatus(env, a.provider) : name === "get_changes" ? await getChanges(env, a) : name === "get_model" ? await getModel(env, a.id) : null;
   const res = (r, extra = {}) => ok({ content: [{ type: "text", text: JSON.stringify(r.body) }], structuredContent: r.body, isError: r.code >= 400, ...extra });
   if (name === "list_providers") return res(await run());
+  if (name === "get_digest") { const r = a.date ? await digestBy(env, a.date) : await latestDigest(env); return res(r ? { code: 200, body: digestOut(r) } : { code: 404, body: { error: "no_issue", hint: "issues are published daily at 12:00 UTC" } }); }
   if (!["get_status", "get_changes", "get_model"].includes(name)) return c.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "unknown tool" } });
   const pay = params._meta?.["x402/payment"];
   if (!pay) { const q = await takeFree(env, c); if (q.free) return res(await run()); }
@@ -318,11 +321,29 @@ app.post("/admin/run", async (c) => {
   const what = c.req.query("what");
   if (what === "status") { for (let i = 0; i < 4; i++) await runStatusBatch(c.env, c.executionCtx, i); }
   else if (what === "catalog") await refreshCatalog(c.env);
+  else if (what === "tw") return c.json(await twSnapshot(c.env));
+  else if (what === "digest") { const d = await buildDigest(c.env, c.req.query("date") || today()); if (c.req.query("save") === "1") await saveDigest(c.env, d); return c.json(d); }
   else if (what === "tokens") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); return c.json((await pageTokens(r)).filter((t) => t.t !== "p" && t.t !== "li").slice(0, 400)); }
   else if (what === "parse") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); const m = await parseModels(await pageTokens(r), pg, today()); return c.json(Object.fromEntries(m)); }
   else { const pg = PAGES.find((p) => p.id === what); if (!pg) return c.json({ error: "unknown" }, 400); await runPage(c.env, c.executionCtx, pg); }
   return c.json({ ok: true, what });
 });
+// ---- daily digest (always free) ----
+const latestDigest = (env) => env.DB.prepare("SELECT * FROM digests ORDER BY date DESC LIMIT 1").first();
+const digestBy = (env, d) => env.DB.prepare("SELECT * FROM digests WHERE date=?").bind(d).first();
+app.get("/digest/latest", async (c) => { const r = await latestDigest(c.env); return r ? c.json(digestOut(r), 200, { "cache-control": "max-age=300" }) : c.json({ error: "no_issue_yet" }, 404); });
+app.get("/digest", async (c) => c.json({ issues: (await c.env.DB.prepare("SELECT date,title,summary,created_at FROM digests ORDER BY date DESC LIMIT 366").all()).results, latest: "/digest/latest", feed: "/digest/feed.xml", page: SITE + "/digest/" }));
+app.get("/digest/feed.xml", async (c) => c.body(atom((await c.env.DB.prepare("SELECT * FROM digests ORDER BY date DESC LIMIT 30").all()).results, new URL(c.req.url).origin), 200, { "content-type": "application/atom+xml; charset=utf-8", "cache-control": "max-age=600" }));
+app.post("/digest/subscribe", async (c) => {
+  let email; const ct = c.req.header("content-type") || "";
+  if (ct.includes("json")) { try { email = (await c.req.json()).email; } catch {} } else { const f = await c.req.parseBody(); email = f.email; }
+  const r = await subscribe(c.env, email, await sha("sub:" + ipOf(c.req.raw)), sha, new URL(c.req.url).origin);
+  if (!ct.includes("json") && (c.req.header("accept") || "").includes("text/html")) return c.redirect(SITE + "/digest/?subscribed=" + (r.code === 200 ? "1" : "0"), 303);
+  return c.json(r.body, r.code);
+});
+for (const k of ["confirm", "unsubscribe"]) app.get("/digest/" + k, async (c) => { const ok = await confirmOrUnsub(c.env, k, c.req.query("token"), sha); return c.redirect(SITE + "/digest/?" + k + "=" + (ok ? "1" : "0"), 303); });
+app.get("/digest/:date{\\d{4}-\\d{2}-\\d{2}}", async (c) => { const r = await digestBy(c.env, c.req.param("date")); return r ? c.json(digestOut(r), 200, { "cache-control": "max-age=3600" }) : c.json({ error: "no_issue_for_date" }, 404); });
+
 app.post("/mcp", (c) => mcp(c, c.env, c.executionCtx));
 app.get("/mcp", (c) => c.json({ error: "Use POST (streamable HTTP, JSON responses)" }, 405));
 app.get("/.well-known/mcp", (c) => c.json({ name: "upstream", version: VERSION, transport: "streamable-http", url: new URL(c.req.url).origin + "/mcp", tools: TOOLS.map((t) => t.name) }));
@@ -334,7 +355,7 @@ app.get("/health", async (c) => { const r = await c.env.DB.prepare("SELECT MIN(c
 app.get("/", (c) => c.json({ name: "Upstream", what: "Is the AI/dev API your agent depends on up right now, and what's changing (deprecations, model retirements, pricing)?",
   free_tier: { with_free_key: `${c.env.FREE_KEY_DAILY} calls/day (POST /v1/keys)`, anonymous: `${c.env.FREE_ANON_DAILY} calls/day`, watches: "1 free change-alert webhook per key" },
   over_quota: { protocol: "x402 v2", network: c.env.X402_NETWORK, prices_usdc: PRICES }, docs: ["/llms.txt", "/openapi.json", SITE],
-  endpoints: ["GET /providers", "GET /status/:provider", "GET /changes?since=&provider=&kind=", "GET /model/:id", "POST /v1/keys", "POST /v1/watches", "POST /mcp", "GET /health"] }));
+  digest: { latest: "/digest/latest", list: "/digest", by_date: "/digest/:date", feed: "/digest/feed.xml", page: SITE + "/digest/" }, endpoints: ["GET /providers", "GET /status/:provider", "GET /changes?since=&provider=&kind=", "GET /model/:id", "POST /v1/keys", "POST /v1/watches", "POST /mcp", "GET /health"] }));
 
 export default {
   fetch: app.fetch,
@@ -344,5 +365,9 @@ export default {
     await runStatusBatch(env, ctx, m);
     if (m % 5 === 2) await runPage(env, ctx, PAGES[Math.floor(m / 5) % PAGES.length]);
     if (m % 360 === 7) await refreshCatalog(env);
+    if (m % 60 === 31) ctx.waitUntil(twSnapshot(env));
+    // 12:00 UTC (6:00 AM Mexico City): publish the issue for today's date, covering everything since the previous issue
+    const d = new Date(ev.scheduledTime);
+    if (d.getUTCHours() === 12 && d.getUTCMinutes() === 3) { await twSnapshot(env); const dg = await buildDigest(env, d.toISOString().slice(0, 10)); await saveDigest(env, dg); }
   },
 };

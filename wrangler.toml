@@ -11,6 +11,7 @@ X402_NETWORK = "eip155:84532"
 FACILITATOR_URL = "https://x402.org/facilitator"
 FREE_KEY_DAILY = "500"
 FREE_ANON_DAILY = "50"
+EMAIL_SENDING_ENABLED = "false"
 
 [[d1_databases]]
 binding = "DB"
@@ -19,3 +20,8 @@ database_id = "04af6b4a-6bd1-4e58-8528-3d1ccdba0779"
 
 [triggers]
 crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "TW"
+database_name = "toolweather"
+database_id = "f3fca32f-f22b-4227-a860-7bccf8295a76"

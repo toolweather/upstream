@@ -26,6 +26,13 @@ Network: ${env.X402_NETWORK} (currently Base Sepolia testnet). Unpaid calls over
 - POST ${o}/mcp: MCP (streamable HTTP) with tools list_providers, get_status, get_changes, get_model. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
 - OpenAPI: ${o}/openapi.json
 
+## Daily breaking-changes digest (free)
+- Page + archive: https://upstream-api.pages.dev/digest/
+- JSON: ${o}/digest/latest and ${o}/digest/{YYYY-MM-DD}; list: ${o}/digest
+- Atom feed: ${o}/digest/feed.xml
+- MCP tool: get_digest {date?}
+- Published daily at 12:00 UTC; combines Upstream (AI/dev API incidents, model deprecations/retirements, pricing-page changes) with Toolweather (breaking MCP tool changes, servers down/back, broken OAuth logins).
+
 ## Notes
 - Data comes from official public status pages and docs. "unknown" means our check failed, not that the provider is down.
 - Responses include a "sponsored" field, reserved and always null for now. No ads.
