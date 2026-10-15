@@ -1,0 +1,21 @@
+name = "upstream"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+account_id = "9c9d3ecdf6a4b87be13756af2efadcce"
+
+[vars]
+PAY_TO = "0xf56910A23FB762e6DF81e6f720C43eDc951aA3e3"
+X402_NETWORK = "eip155:84532"
+FACILITATOR_URL = "https://x402.org/facilitator"
+FREE_KEY_DAILY = "500"
+FREE_ANON_DAILY = "50"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "upstream"
+database_id = "04af6b4a-6bd1-4e58-8528-3d1ccdba0779"
+
+[triggers]
+crons = ["* * * * *"]

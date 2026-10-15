@@ -1,0 +1,23 @@
+{
+  "name": "upstream",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/hono": "^2.28.0",
+    "hono": "^4.13.13",
+    "viem": "^2.57.7"
+  },
+  "devDependencies": {
+    "@x402/fetch": "^2.28.0",
+    "wrangler": "^4.151.0"
+  }
+}

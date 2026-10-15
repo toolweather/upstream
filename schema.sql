@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS status (provider TEXT PRIMARY KEY, indicator TEXT, description TEXT, incidents TEXT, components TEXT, checked_at TEXT, changed_at TEXT, error TEXT);
+CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, provider TEXT, url TEXT, hash TEXT, text TEXT, checked_at TEXT, changed_at TEXT, error TEXT);
+CREATE TABLE IF NOT EXISTS changes (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, kind TEXT, title TEXT, detail TEXT, source TEXT, at TEXT);
+CREATE INDEX IF NOT EXISTS changes_at ON changes(at);
+CREATE TABLE IF NOT EXISTS models (model TEXT, provider TEXT, status TEXT, dates TEXT, snippet TEXT, source TEXT, seen_at TEXT, PRIMARY KEY(model, provider));
+CREATE TABLE IF NOT EXISTS keys (key_hash TEXT PRIMARY KEY, created_at TEXT, ip_hash TEXT, day TEXT, used INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS anon (ip_hash TEXT, day TEXT, used INTEGER DEFAULT 0, PRIMARY KEY(ip_hash, day));
+CREATE TABLE IF NOT EXISTS watches (id TEXT PRIMARY KEY, key_hash TEXT, provider TEXT, url TEXT, secret TEXT, paid INTEGER DEFAULT 0, expires_at TEXT, fails INTEGER DEFAULT 0, active INTEGER DEFAULT 1, created_at TEXT);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);

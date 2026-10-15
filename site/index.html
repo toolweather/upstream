@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Upstream: is the API your agent depends on up right now?</title>
+<meta name="description" content="Live status and breaking-change feed (outages, deprecations, model retirements, pricing changes) for ~40 AI and developer APIs. Free for most agents; pay-per-call via x402 above the free tier.">
+<style>
+:root{--bg:#fbfbf9;--fg:#1b1d21;--mut:#626873;--card:#fff;--bd:#e3e3df;--acc:#2f6f5e;--ok:#2f8f5b;--warn:#c58a12;--bad:#c2412d;--code:#f2f2ee}
+@media (prefers-color-scheme:dark){:root:not([data-t=light]){--bg:#121417;--fg:#e7e8ea;--mut:#9aa1ab;--card:#1a1d21;--bd:#2a2e34;--acc:#6fc2a8;--code:#1f2328}}
+:root[data-t=dark]{--bg:#121417;--fg:#e7e8ea;--mut:#9aa1ab;--card:#1a1d21;--bd:#2a2e34;--acc:#6fc2a8;--code:#1f2328}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:40px 20px 80px}h1{font-size:2rem;line-height:1.2;margin:.2em 0}h2{margin-top:2.2em;font-size:1.25rem}
+.mut{color:var(--mut)}a{color:var(--acc)}code,pre{background:var(--code);border-radius:6px;font:14px/1.5 ui-monospace,Menlo,monospace}code{padding:1px 5px}pre{padding:12px 14px;overflow:auto}
+.top{display:flex;justify-content:space-between;align-items:center}.logo{font-weight:700;letter-spacing:.3px}
+button{background:none;border:1px solid var(--bd);color:var(--fg);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-top:12px}
+.p{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:8px 12px;font-size:14px;display:flex;gap:8px;align-items:center}
+.d{width:9px;height:9px;border-radius:50%;background:var(--mut);flex:none}.operational .d{background:var(--ok)}.degraded .d,.maintenance .d{background:var(--warn)}.partial_outage .d,.major_outage .d{background:var(--bad)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px}
+table{border-collapse:collapse;width:100%;font-size:15px}td,th{border-bottom:1px solid var(--bd);padding:8px 6px;text-align:left}
+.note{border-left:3px solid var(--acc);padding:4px 12px;color:var(--mut)}
+</style>
+<script>try{const t=localStorage.getItem("t");if(t)document.documentElement.dataset.t=t}catch(e){}</script>
+</head><body><main>
+<div class="top"><span class="logo">⟰ Upstream</span><button id="tt" aria-label="Toggle dark mode">◐ Theme</button></div>
+<h1>Is the API your agent depends on up right now, and what's about to change?</h1>
+<p class="mut">Upstream checks ~40 AI and developer APIs every few minutes and watches the deprecation, model-retirement and pricing pages of the major LLM providers. One call tells your agent whether OpenAI, Anthropic, GitHub or Stripe will likely work right now, and whether the model it uses is being retired.</p>
+
+<h2>Free for most agents</h2>
+<div class="cards">
+<div class="c"><b>500 calls a day</b><br><span class="mut">with a free key you get instantly:</span><pre>curl -X POST https://upstream.toolweather.workers.dev/v1/keys</pre></div>
+<div class="c"><b>50 calls a day</b><br><span class="mut">with no key at all, from any agent.</span></div>
+<div class="c"><b>1 change alert</b><br><span class="mut">a signed webhook when a provider you follow breaks, retires a model or edits its pricing page.</span></div>
+</div>
+<p class="mut">Need more? Above the free tier you just pay per call with <a href="https://www.x402.org">x402</a> (USDC). No account, no card, no subscription.</p>
+<table><tr><th>Endpoint</th><th>What it answers</th><th>Over the free tier</th></tr>
+<tr><td><code>GET /providers</code></td><td>Which providers we track and their state</td><td>Always free</td></tr>
+<tr><td><code>GET /status/:provider</code></td><td>Up right now? Incidents and affected parts</td><td>$0.003</td></tr>
+<tr><td><code>GET /model/:id</code></td><td>Is this model deprecated or retiring, and when?</td><td>$0.003</td></tr>
+<tr><td><code>GET /changes?since=</code></td><td>Outages, deprecations, retirements, pricing edits</td><td>$0.01</td></tr>
+<tr><td><code>POST /v1/watches</code></td><td>Extra change-alert webhook (30 days)</td><td>$0.05</td></tr></table>
+<p class="note">Preview: payments currently run on the Base Sepolia <b>testnet</b>, so no real money moves yet.</p>
+
+<h2>Right now</h2>
+<div id="g" class="grid"><span class="mut">Loading…</span></div>
+
+<h2>Use it</h2>
+<pre>curl https://upstream.toolweather.workers.dev/status/openai -H "X-API-Key: up_…"
+curl https://upstream.toolweather.workers.dev/model/claude-3-opus-20240229</pre>
+<p>MCP: add <code>https://upstream.toolweather.workers.dev/mcp</code> (streamable HTTP). Tools: <code>list_providers</code>, <code>get_status</code>, <code>get_changes</code>, <code>get_model</code>.</p>
+<p>Docs for agents: <a href="https://upstream.toolweather.workers.dev/llms.txt">llms.txt</a> · <a href="https://upstream.toolweather.workers.dev/openapi.json">OpenAPI</a> · <a href="https://github.com/toolweather/upstream">GitHub</a></p>
+
+<h2>Honest notes</h2>
+<p class="mut">We read official public status pages and docs. A few providers have no machine-readable status page, so for those we check that the API answers. Model dates come from the provider's own page and every answer includes the excerpt we read, so you can double-check it. "unknown" means our check failed, not that the provider is down. No ads. A field called <code>sponsored</code> is reserved in responses and is always empty for now.</p>
+<p class="mut">Made by the team behind <a href="https://toolweather.pages.dev">Toolweather</a>.</p>
+</main>
+<script>
+document.getElementById("tt").onclick=()=>{const r=document.documentElement,d=r.dataset.t?r.dataset.t==="dark":matchMedia("(prefers-color-scheme:dark)").matches;r.dataset.t=d?"light":"dark";try{localStorage.setItem("t",r.dataset.t)}catch(e){}};
+fetch("https://upstream.toolweather.workers.dev/providers").then(r=>r.json()).then(j=>{const g=document.getElementById("g");g.innerHTML="";j.providers.forEach(p=>{const e=document.createElement("div");e.className="p "+p.state;e.title=p.state.replace("_"," ");e.innerHTML='<span class="d"></span>';e.append(p.name.replace(/ \(.*\)/,""));g.append(e)})}).catch(()=>{document.getElementById("g").textContent="Couldn't load live status."});
+</script></body></html>

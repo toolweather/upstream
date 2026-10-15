@@ -1,0 +1,29 @@
+# Upstream
+
+> Is the AI or developer API your agent depends on up right now, and what's changing? Upstream watches ~40 providers (OpenAI, Anthropic, Google AI, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio...) every few minutes, and tracks model deprecation, retirement and pricing pages for the major LLM providers.
+
+## Free tier (most agents never pay)
+- 500 calls/day with a free key. Get one instantly: POST https://upstream.toolweather.workers.dev/v1/keys, then send header X-API-Key.
+- 50 calls/day with no key at all.
+- 1 free change-alert webhook per key.
+- Every response carries X-Free-Remaining.
+
+## Over the free quota: x402 pay-per-call (USDC)
+Network: eip155:84532 (currently Base Sepolia testnet). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
+- GET /status/:provider: $0.003
+- GET /changes: $0.01
+- GET /model/:id: $0.003
+- POST /v1/watches (each extra webhook watch, 30 days): $0.05
+
+## Endpoints
+- GET https://upstream.toolweather.workers.dev/providers (always free): list of providers and current state
+- GET https://upstream.toolweather.workers.dev/status/{provider}: state (operational | degraded | partial_outage | major_outage | maintenance | unknown), incidents, affected components, safe_to_call
+- GET https://upstream.toolweather.workers.dev/changes?since=ISO&provider=&kind=status|deprecations|model_retirement|pricing: change feed
+- GET https://upstream.toolweather.workers.dev/model/{id}: deprecated_or_retiring | listed_no_retirement_found | unknown, with dates and the source excerpt
+- POST https://upstream.toolweather.workers.dev/v1/watches {"provider","url"}: signed webhooks (X-Upstream-Signature: sha256=HMAC(secret, body))
+- POST https://upstream.toolweather.workers.dev/mcp: MCP (streamable HTTP) with tools list_providers, get_status, get_changes, get_model. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
+- OpenAPI: https://upstream.toolweather.workers.dev/openapi.json
+
+## Notes
+- Data comes from official public status pages and docs. "unknown" means our check failed, not that the provider is down.
+- Responses include a "sponsored" field, reserved and always null for now. No ads.
