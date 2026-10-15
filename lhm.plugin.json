@@ -18,7 +18,7 @@
     {
       "name": "check_api_status",
       "title": "Is this API / provider down right now?",
-      "description": "Check whether one AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio, ~40 total) is up, degraded, or down right now. Use before calling that provider, or right after 5xx/429/timeouts, to choose retry, wait, or a fallback. Not for a model id (check_model_deprecation), the filtered change feed (list_recent_api_changes), or the daily rollup (get_digest). Returns summary, verdict (up|degraded|partially down|down|unknown), recommended_action, incidents, affected_components, checked_at, and freshness; status is rechecked about every 4 minutes. An unknown provider id returns 404 unknown_provider. Example: {\"provider\":\"openai\"}. Free within the daily quota, then $0.003 via x402. Alias: get_status.",
+      "description": "Check whether one AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio, ~40 total) is up, degraded, or down right now. Use before calling that provider, or right after 5xx/429/timeouts, to choose retry, wait, or a fallback. Not for a model id (check_model_deprecation), the filtered change feed (list_recent_api_changes), or the daily rollup (get_digest). Returns summary, verdict (up|degraded|partially down|down|unknown), recommended_action, incidents, affected_components, checked_at, and freshness; status is rechecked about every 5 minutes. An unknown provider id returns 404 unknown_provider. Example: {\"provider\":\"openai\"}. Free within the daily quota, then $0.003 via x402. Alias: get_status.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -80,7 +80,7 @@
     {
       "name": "list_recent_api_changes",
       "title": "What changed recently in AI/dev APIs?",
-      "description": "List the on-demand feed of recent AI and developer API changes (status flips, deprecation-page edits, model retirements, pricing-page edits). Use for a chosen window, one provider, or one kind, when explaining sudden breakage. Not for live up/down (check_api_status) and not for the once-a-day digest, which also covers MCP server breakage (get_digest). Returns summary, count, freshness, and changes[] with provider, kind, title, detail, source, and at, newest first. Status rows arrive within about 4 minutes; doc-page rows every few hours. A limit above 500 is clamped to 500; an unknown provider returns an empty list, not an error. Example: {\"provider\":\"anthropic\",\"kind\":\"model_retirement\"}. Free within the daily quota, then $0.01 via x402. Alias: get_changes.",
+      "description": "List the on-demand feed of recent AI and developer API changes (status flips, deprecation-page edits, model retirements, pricing-page edits). Use for a chosen window, one provider, or one kind, when explaining sudden breakage. Not for live up/down (check_api_status) and not for the once-a-day digest, which also covers MCP server breakage (get_digest). Returns summary, count, freshness, and changes[] with provider, kind, title, detail, source, and at, newest first. Status rows arrive within about 5 minutes; doc-page rows every few hours. A limit above 500 is clamped to 500; an unknown provider returns an empty list, not an error. Example: {\"provider\":\"anthropic\",\"kind\":\"model_retirement\"}. Free within the daily quota, then $0.01 via x402. Alias: get_changes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -132,7 +132,7 @@
     {
       "name": "list_providers",
       "title": "List tracked API providers",
-      "description": "List every AI and developer API provider Upstream tracks (~40) with id, name, category, current state, checked_at, and status page. Use to pick a provider id for check_api_status, or for one all-providers health pass. Not for one provider's incidents (check_api_status) and not for what changed (list_recent_api_changes or get_digest). No parameters. Always free; does not spend the daily quota. State is refreshed about every 4 minutes. Returns {count, providers:[{id, name, category, state, checked_at, status_page}]}; state is operational, degraded, partial_outage, major_outage, maintenance, or unknown.",
+      "description": "List every AI and developer API provider Upstream tracks (~40) with id, name, category, current state, checked_at, and status page. Use to pick a provider id for check_api_status, or for one all-providers health pass. Not for one provider's incidents (check_api_status) and not for what changed (list_recent_api_changes or get_digest). No parameters. Always free; does not spend the daily quota. State is refreshed about every 5 minutes. Returns {count, providers:[{id, name, category, state, checked_at, status_page}]}; state is operational, degraded, partial_outage, major_outage, maintenance, or unknown.",
       "inputSchema": {
         "type": "object",
         "properties": {}

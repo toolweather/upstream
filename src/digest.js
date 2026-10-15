@@ -1,5 +1,6 @@
 // Daily breaking-changes digest: Upstream (AI/dev APIs) + Toolweather (MCP servers). Real data only.
 import { PROVIDERS } from "./providers.js";
+import { snapshotUnchanged } from "./persist.js";
 const PBY = Object.fromEntries(PROVIDERS.map((p) => [p.id, p]));
 const iso = () => new Date().toISOString();
 const fmtT = (s) => (s ? s.slice(0, 16).replace("T", " ") + " UTC" : "");
@@ -22,6 +23,7 @@ export async function twSnapshot(env) {
     if (p[1] !== "auth_broken" && r.st === "auth_broken") ev.push([r.url, r.name, "auth_broken", r.sd || "OAuth login flow broken"]);
     if (p[1] === "auth_broken" && r.st === "auth_ok") ev.push([r.url, r.name, "auth_fixed", r.sd || "OAuth login flow reachable again"]);
   }
+  if (snapshotUnchanged(prev, cur)) return { servers: rows.length, events: 0, baseline: false };
   const st = [env.DB.prepare("INSERT INTO meta VALUES('tw_snapshot',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(JSON.stringify(cur)),
     env.DB.prepare("INSERT INTO meta VALUES('tw_snapshot_at',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(t)];
   if (!prev) st.push(env.DB.prepare("INSERT INTO meta VALUES('tw_baseline_at',?) ON CONFLICT(k) DO NOTHING").bind(t));

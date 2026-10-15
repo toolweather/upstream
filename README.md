@@ -14,4 +14,4 @@ Live status and breaking-change feed for the AI and developer APIs agents depend
 
 ## Stack
 Cloudflare Worker (free plan) + D1, Hono, `@x402/hono` with the PayAI facilitator (Base mainnet). Pay-to address, network and facilitator are env vars in `wrangler.toml`, so switching to mainnet is a config change.
-Cron every minute: a quarter of the providers per run (each provider ~every 4 min), one tracked docs page every 5 min.
+Cron every 5 minutes: all ~40 providers each run, and one tracked docs page per run (skipped on the 12:00 UTC digest run; a full pass of the docs pages is about 45 min). Status, page, model, and catalog rows are written only when the content changed. One `probe_clock` meta row per run records the check time used for `checked_at` and freshness, so an unchanged provider does not cost a D1 write.
