@@ -1,0 +1,5 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": ["toolweather"],
+  "description": "Live API status, open incidents, and model deprecations/retirements for ~40 AI/dev providers. Free tier, then x402."
+}
