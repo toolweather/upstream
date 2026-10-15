@@ -347,7 +347,7 @@ app.get("/.well-known/mcp", (c) => c.json({ name: "upstream", version: VERSION, 
 app.get("/llms.txt", (c) => c.text(LLMS(new URL(c.req.url).origin, c.env)));
 app.get("/openapi.json", (c) => c.json(openapi(new URL(c.req.url).origin, c.env)));
 app.get("/health", async (c) => { const r = await c.env.DB.prepare("SELECT MIN(checked_at) oldest, MAX(checked_at) newest, COUNT(*) n FROM status").first();
-  const pg = (await c.env.DB.prepare("SELECT id,checked_at,changed_at,error FROM pages").all()).results; return c.json({ ok: true, version: VERSION, network: c.env.X402_NETWORK, status_rows: r, pages: pg }); });
+  const pg = (await c.env.DB.prepare("SELECT id,checked_at,changed_at,error FROM pages").all()).results; const lc = await c.env.DB.prepare("SELECT v FROM meta WHERE k='last_cron'").first(); return c.json({ ok: true, version: VERSION, last_cron: lc?.v || null, network: c.env.X402_NETWORK, status_rows: r, pages: pg }); });
 app.get("/", (c) => c.json({ name: "Upstream", what: "Is the AI/dev API your agent depends on up right now, and what's changing (deprecations, model retirements, pricing)?",
   free_tier: { with_free_key: `${c.env.FREE_KEY_DAILY} calls/day (POST /v1/keys)`, anonymous: `${c.env.FREE_ANON_DAILY} calls/day`, watches: "1 free change-alert webhook per key" },
   over_quota: { protocol: "x402 v2", network: c.env.X402_NETWORK, prices_usdc: PRICES }, docs: ["/llms.txt", "/openapi.json", SITE],
@@ -356,10 +356,10 @@ app.get("/", (c) => c.json({ name: "Upstream", what: "Is the AI/dev API your age
 export default {
   fetch: app.fetch,
   async scheduled(ev, env, ctx) {
+    await env.DB.prepare("INSERT INTO meta VALUES('last_cron',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(now()).run();
     const m = Math.floor(ev.scheduledTime / 60000);
     await runStatusBatch(env, ctx, m);
     if (m % 5 === 2) await runPage(env, ctx, PAGES[Math.floor(m / 5) % PAGES.length]);
     if (m % 360 === 7) await refreshCatalog(env);
   },
 };
-export { checkProvider, runPage, runStatusBatch, refreshCatalog };
