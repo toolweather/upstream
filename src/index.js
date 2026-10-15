@@ -5,7 +5,8 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { PROVIDERS, PAGES } from "./providers.js";
 import { pageTokens, parseModels } from "./models.js";
-import { twSnapshot, buildDigest, saveDigest, digestOut, atom, subscribe, confirmOrUnsub } from "./digest.js";
+import { twSnapshot, buildDigest, saveDigest, digestOut, atom, subscribe, confirmOrUnsub, enqueueDigest } from "./digest.js";
+import { drainOutbox, mailReady } from "./mailer.js";
 import { LLMS, openapi, SITE } from "./docs.js";
 
 const VERSION = "0.1.0";
@@ -321,6 +322,7 @@ app.post("/admin/run", async (c) => {
   const what = c.req.query("what");
   if (what === "status") { for (let i = 0; i < 4; i++) await runStatusBatch(c.env, c.executionCtx, i); }
   else if (what === "catalog") await refreshCatalog(c.env);
+  else if (what === "drain") return c.json(await drainOutbox(c.env));
   else if (what === "tw") return c.json(await twSnapshot(c.env));
   else if (what === "digest") { const d = await buildDigest(c.env, c.req.query("date") || today()); if (c.req.query("save") === "1") await saveDigest(c.env, d); return c.json(d); }
   else if (what === "tokens") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); return c.json((await pageTokens(r)).filter((t) => t.t !== "p" && t.t !== "li").slice(0, 400)); }
@@ -341,7 +343,9 @@ app.post("/digest/subscribe", async (c) => {
   if (!ct.includes("json") && (c.req.header("accept") || "").includes("text/html")) return c.redirect(SITE + "/digest/?subscribed=" + (r.code === 200 ? "1" : "0"), 303);
   return c.json(r.body, r.code);
 });
-for (const k of ["confirm", "unsubscribe"]) app.get("/digest/" + k, async (c) => { const ok = await confirmOrUnsub(c.env, k, c.req.query("token"), sha); return c.redirect(SITE + "/digest/?" + k + "=" + (ok ? "1" : "0"), 303); });
+for (const k of ["confirm", "unsubscribe"]) app.get("/digest/" + k, async (c) => { const ok = await confirmOrUnsub(c.env, k, c.req.query("token"), sha, c.req.query("e")); return c.redirect(SITE + "/digest/?" + k + "=" + (ok ? "1" : "0"), 303); });
+// RFC 8058 one-click unsubscribe (List-Unsubscribe-Post)
+app.post("/digest/unsubscribe", async (c) => { const ok = await confirmOrUnsub(c.env, "unsubscribe", c.req.query("token"), sha, c.req.query("e")); return c.json({ ok }, ok ? 200 : 400); });
 app.get("/digest/:date{\\d{4}-\\d{2}-\\d{2}}", async (c) => { const r = await digestBy(c.env, c.req.param("date")); return r ? c.json(digestOut(r), 200, { "cache-control": "max-age=3600" }) : c.json({ error: "no_issue_for_date" }, 404); });
 
 app.post("/mcp", (c) => mcp(c, c.env, c.executionCtx));
@@ -368,6 +372,7 @@ export default {
     if (m % 60 === 31) ctx.waitUntil(twSnapshot(env));
     // 12:00 UTC (6:00 AM Mexico City): publish the issue for today's date, covering everything since the previous issue
     const d = new Date(ev.scheduledTime);
-    if (d.getUTCHours() === 12 && d.getUTCMinutes() === 3) { await twSnapshot(env); const dg = await buildDigest(env, d.toISOString().slice(0, 10)); await saveDigest(env, dg); }
+    if (d.getUTCHours() === 12 && d.getUTCMinutes() === 3) { await twSnapshot(env); const dg = await buildDigest(env, d.toISOString().slice(0, 10)); await saveDigest(env, dg); if (env.EMAIL_SENDING_ENABLED === "true") await enqueueDigest(env, dg); }
+    if (mailReady(env)) ctx.waitUntil(drainOutbox(env));
   },
 };

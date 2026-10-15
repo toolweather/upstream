@@ -114,7 +114,20 @@ export function atom(rows, origin) {
   return `<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Upstream breaking-changes digest</title><subtitle>Daily: AI/dev API incidents, model retirements, pricing changes, breaking MCP server changes.</subtitle><id>tag:upstream-api.pages.dev,2026:digest</id><link rel="self" href="${origin}/digest/feed.xml"/><link href="${SITE}/digest/"/><updated>${rows[0]?.created_at || iso()}</updated><author><name>Upstream</name></author>${items}</feed>`;
 }
 
-// ---- subscriptions: double opt-in plumbing, sending disabled ----
+// ---- subscriptions: double opt-in; delivery via mailer.js (off unless EMAIL_SENDING_ENABLED=true + provider key) ----
+import { confirmMail, digestMail } from "./mailer.js";
+export async function unsubToken(env, email) {
+  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.UNSUB_SECRET || env.ADMIN_TOKEN || "x"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode("unsub:" + email)))].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 40);
+}
+export const unsubUrl = async (env, email) => `https://upstream.toolweather.workers.dev/digest/unsubscribe?e=${encodeURIComponent(email)}&token=${await unsubToken(env, email)}`;
+export async function enqueueDigest(env, d) {
+  const subs = (await env.DB.prepare("SELECT email FROM subscribers WHERE status='confirmed'").all()).results;
+  const st = [];
+  for (const s of subs) { const m = digestMail(d, await unsubUrl(env, s.email)); st.push(env.DB.prepare("INSERT INTO email_outbox(email,kind,subject,body,created_at,state) VALUES(?,?,?,?,?,'queued')").bind(s.email, "digest", d.title, JSON.stringify(m), iso())); }
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  return subs.length;
+}
 export async function subscribe(env, email, ipHash, sha, origin) {
   email = String(email || "").trim().toLowerCase();
   if (!/^[^\s@]{1,64}@[^\s@]{1,190}\.[a-z]{2,}$/.test(email)) return { code: 400, body: { error: "invalid_email" } };
@@ -127,18 +140,19 @@ export async function subscribe(env, email, ipHash, sha, origin) {
   if (!ex || ex.status === "unsubscribed") await env.DB.prepare("INSERT INTO subscribers(email,status,confirm_hash,unsub_hash,ip_hash,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET status='pending',confirm_hash=excluded.confirm_hash,unsub_hash=excluded.unsub_hash,created_at=excluded.created_at,unsubscribed_at=NULL")
     .bind(email, "pending", await sha(ct), await sha(ut), ipHash, iso()).run();
   if (!ex || ex.status === "unsubscribed") {
-    // Queue the confirmation email. Nothing is sent while EMAIL_SENDING_ENABLED != "true" (needs Alberto's approval + a mail provider).
-    await env.DB.prepare("INSERT INTO email_outbox(email,kind,subject,body,created_at,state) VALUES(?,?,?,?,?,?)").bind(email, "confirm", "Confirm your Upstream digest subscription",
-      `Confirm: ${origin}/digest/confirm?token=${ct}\nIf you didn't ask for this, ignore this email.\nUnsubscribe: ${origin}/digest/unsubscribe?token=${ut}`, iso(), env.EMAIL_SENDING_ENABLED === "true" ? "queued" : "held_sending_disabled").run();
+    // Queue the confirmation email; the mailer sends it only when delivery is switched on.
+    const m = confirmMail(ct, null); m.unsubUrl = await unsubUrl(env, email);
+    m.text = m.text.replace(/Unsubscribe: .*$/, "Unsubscribe: " + m.unsubUrl); m.html = m.html.replace(/href="[^"]*unsubscribe[^"]*"/, `href="${m.unsubUrl}"`);
+    await env.DB.prepare("INSERT INTO email_outbox(email,kind,subject,body,created_at,state) VALUES(?,?,?,?,?,'queued')").bind(email, "confirm", "Confirm your Upstream digest subscription", JSON.stringify(m), iso()).run();
   }
   return { code: 200, body: { ok: true, status: ex?.status === "confirmed" ? "already_confirmed" : "pending_confirmation",
-    message: "Thanks, your address is saved. Email delivery isn't switched on yet. When it is, we'll send one confirmation email, and nothing else unless you confirm. Until then, read the digest on the site or via RSS." } };
+    message: env.EMAIL_SENDING_ENABLED === "true" ? "Thanks! Check your inbox for a confirmation email. Nothing else is sent unless you confirm." : "Thanks, your address is saved. Email delivery isn't switched on yet. When it is, we'll send one confirmation email, and nothing else unless you confirm. Until then, read the digest on the site or via RSS." } };
 }
-export async function confirmOrUnsub(env, kind, token, sha) {
+export async function confirmOrUnsub(env, kind, token, sha, email) {
   if (!/^[0-9a-f]{40}$/.test(token || "")) return false;
-  const h = await sha(token);
-  const r = kind === "confirm"
-    ? await env.DB.prepare("UPDATE subscribers SET status='confirmed',confirmed_at=? WHERE confirm_hash=? AND status='pending' RETURNING email").bind(iso(), h).first()
-    : await env.DB.prepare("UPDATE subscribers SET status='unsubscribed',unsubscribed_at=? WHERE unsub_hash=? RETURNING email").bind(iso(), h).first();
-  return !!r;
+  if (kind === "confirm") return !!(await env.DB.prepare("UPDATE subscribers SET status='confirmed',confirmed_at=? WHERE confirm_hash=? AND status='pending' RETURNING email").bind(iso(), await sha(token)).first());
+  email = String(email || "").toLowerCase(); if (token !== (await unsubToken(env, email))) return false;
+  await env.DB.prepare("UPDATE subscribers SET status='unsubscribed',unsubscribed_at=? WHERE email=?").bind(iso(), email).run();
+  await env.DB.prepare("UPDATE email_outbox SET state='skipped' WHERE email=? AND state IN ('queued','held_sending_disabled')").bind(email).run();
+  return true;
 }
