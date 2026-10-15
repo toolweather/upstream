@@ -10,5 +10,5 @@ Live status and breaking-change feed for the AI and developer APIs agents depend
 500 calls/day with a free key (`POST /v1/keys`), 50/day anonymous, 1 free change-alert webhook. Above that, pay per call with x402 (Base mainnet, real USDC): `/status/:provider` $0.003, `/model/:id` $0.003, `/changes` $0.01, extra watch $0.05/30 days.
 
 ## Stack
-Cloudflare Worker (free plan) + D1, Hono, `@x402/hono` with the x402.org facilitator. Pay-to address, network and facilitator are env vars in `wrangler.toml`, so switching to mainnet is a config change.
+Cloudflare Worker (free plan) + D1, Hono, `@x402/hono` with the PayAI facilitator (Base mainnet). Pay-to address, network and facilitator are env vars in `wrangler.toml`, so switching to mainnet is a config change.
 Cron every minute: a quarter of the providers per run (each provider ~every 4 min), one tracked docs page every 5 min.
