@@ -9,7 +9,7 @@ import { twSnapshot, buildDigest, saveDigest, digestOut, atom, subscribe, confir
 import { drainOutbox, mailReady } from "./mailer.js";
 import { LLMS, openapi, SITE } from "./docs.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const PRICES = { status: "$0.003", changes: "$0.01", model: "$0.003", watch: "$0.05" };
 const PBY = Object.fromEntries(PROVIDERS.map((p) => [p.id, p]));
 const now = () => new Date().toISOString();
@@ -75,7 +75,11 @@ async function getStatus(env, id) {
   const r = await env.DB.prepare("SELECT * FROM status WHERE provider=?").bind(id).first();
   const pages = PAGES.filter((x) => x.provider === id).map((x) => ({ kind: x.kind, url: x.url }));
   const recent = (await env.DB.prepare("SELECT kind,title,at FROM changes WHERE provider=? ORDER BY id DESC LIMIT 5").bind(id).all()).results;
-  return { code: 200, body: { ...rowOut(p, r), tracked_pages: pages, recent_changes: recent } };
+  const o = rowOut(p, r), fr = freshness(o.age_seconds, 300);
+  const act = { operational: "Safe to call.", maintenance: "Safe to call; scheduled maintenance in progress, expect brief errors.", degraded: "Call with retries and backoff; have a fallback provider ready.", partial_outage: "Expect failures; retry with backoff or route to a fallback provider.", major_outage: "Do not rely on it now; route to a fallback provider.", unknown: "Status unknown (our check failed, not necessarily the provider); proceed with retries." }[o.state] || "Proceed with care.";
+  const verdict = { operational: "up", maintenance: "up", degraded: "degraded", partial_outage: "partially down", major_outage: "down", unknown: "unknown" }[o.state] || o.state;
+  const line = `${p.name} is ${verdict}${o.summary ? " (" + o.summary + ")" : ""}${o.state_since ? " since " + o.state_since : ""}. ${act}`;
+  return { code: 200, body: { summary: line, verdict, recommended_action: act, freshness: fr, ...o, summary: line, provider_description: o.summary, tracked_pages: pages, recent_changes: recent } };
 }
 async function getChanges(env, q) {
   let sql = "SELECT * FROM changes WHERE at>?", a = [q.since || new Date(Date.now() - 7 * 864e5).toISOString()];
@@ -83,7 +87,9 @@ async function getChanges(env, q) {
   if (q.kind) { sql += " AND kind=?"; a.push(q.kind); }
   sql += " ORDER BY id DESC LIMIT ?"; a.push(Math.min(+q.limit || 100, 500));
   const rs = (await env.DB.prepare(sql).bind(...a).all()).results.map((r) => ({ ...r, detail: JSON.parse(r.detail || "null") }));
-  return { code: 200, body: { since: a[0], count: rs.length, kinds: ["status", "deprecations", "model_retirement", "pricing"], changes: rs } };
+  const byKind = rs.reduce((m, r) => (m[r.kind] = (m[r.kind] || 0) + 1, m), {});
+  const summ = rs.length ? `${rs.length} change(s) since ${a[0]}${q.provider ? " for " + q.provider : ""}: ` + Object.entries(byKind).map(([k, n]) => `${n} ${k}`).join(", ") + `. Latest: ${rs[0].title}.` : `No changes since ${a[0]}${q.provider ? " for " + q.provider : ""}. Nothing to act on.`;
+  return { code: 200, body: { summary: summ, checked_at: now(), freshness: { data_as_of: rs[0]?.at || null, note: "status changes recorded within ~4 min; doc pages re-read every few hours" }, since: a[0], count: rs.length, kinds: ["status", "deprecations", "model_retirement", "pricing"], changes: rs } };
 }
 const norm = (s) => String(s).toLowerCase().replace(/^models\//, "").trim();
 async function getModel(env, id) {
@@ -96,13 +102,22 @@ async function getModel(env, id) {
   const order = { retired: 3, deprecated: 2, active: 1 };
   const best = rows.sort((a, b) => (order[b.status] || 0) - (order[a.status] || 0))[0];
   const info = best ? JSON.parse(best.dates || "{}") : {};
-  return { code: 200, body: { model: m, status: best ? best.status : "unknown",
+  const st = best ? best.status : "unknown", rep = info.replacement || null;
+  const summary = st === "retired" ? `${m} is RETIRED${info.shutdown_date ? " (shut down " + info.shutdown_date + ")" : ""}. Switch to ${rep || "a current model from the same provider"} now.`
+    : st === "deprecated" ? `${m} is DEPRECATED${info.shutdown_date ? ", shutdown " + info.shutdown_date : ""}. Plan migration to ${rep || "a current model from the same provider"}.`
+    : st === "active" ? `${m} is active with no announced shutdown. Safe to keep using.`
+    : `${m} is not listed on any tracked deprecation page. Probably fine, but not confirmed${sugg.length ? "; see did_you_mean" : ""}.`;
+  const seen = best?.seen_at || null;
+  return { code: 200, body: { summary, verdict: st, recommended_action: st === "retired" ? "switch_now" : st === "deprecated" ? "plan_migration" : st === "active" ? "keep_using" : "verify_with_provider",
+    checked_at: now(), freshness: { data_as_of: seen, age_seconds: seen ? Math.round((Date.now() - Date.parse(seen)) / 1000) : null, note: "deprecation pages are re-read every few hours" },
+    model: m, status: st,
     shutdown_date: info.shutdown_date || null, deprecated_on: info.deprecated_on || null, replacement: info.replacement || null,
     evidence: rows.map((r) => ({ provider: r.provider, status: r.status, ...JSON.parse(r.dates || "{}"), row: r.snippet, source: r.source, seen_at: r.seen_at })),
     did_you_mean: sugg.length ? sugg : undefined, on_openrouter: orIds?.length ? orIds : undefined,
     states: "active = the provider's page explicitly lists it as active or with no shutdown date; deprecated = explicitly deprecated, shutdown in the future; retired = shutdown date has passed; unknown = not explicitly listed on any tracked deprecation page (not a guarantee it is live).",
     sponsored: null } };
 }
+function freshness(age, fresh) { return { age_seconds: age, fresh: age != null && age <= fresh, note: age == null ? "never checked" : age <= fresh ? "checked within the last " + Math.round(fresh / 60) + " minutes" : "stale: last check " + Math.round(age / 60) + " min ago" }; }
 // ---------- scheduled collection ----------
 async function fetchT(url, ms = 8000, init = {}) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
@@ -215,33 +230,41 @@ async function notify(env, events) {
 }
 
 // ---------- MCP ----------
+const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const TOOLS = [
-  { name: "list_providers", description: "List the ~40 AI and developer API providers Upstream tracks, with their current state. Free.", inputSchema: { type: "object", properties: {} } },
-  { name: "get_digest", description: "Daily breaking-changes digest (free): AI/dev API incidents, model deprecations/retirements, pricing-page changes, breaking MCP server changes. Optional date YYYY-MM-DD, default latest.", inputSchema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD; omit for the latest issue" } } } },
-  { name: "get_status", description: `Is this provider's API up right now? Current state, open incidents, affected components. Free within the daily quota, then ${PRICES.status} via x402.`, inputSchema: { type: "object", properties: { provider: { type: "string", description: "provider id from list_providers, e.g. openai, anthropic, github, stripe" } }, required: ["provider"] } },
-  { name: "get_changes", description: `What changed: status transitions, deprecation-page edits, model retirements, pricing-page edits. Free within the daily quota, then ${PRICES.changes} via x402.`, inputSchema: { type: "object", properties: { since: { type: "string", description: "ISO timestamp, default 7 days ago" }, provider: { type: "string" }, kind: { type: "string", enum: ["status", "deprecations", "model_retirement", "pricing"] }, limit: { type: "number" } } } },
-  { name: "get_model", description: `Is this model id active, deprecated or retired? Shutdown date and replacement, from the provider's own deprecation page ("unknown" if not explicitly listed). Free within the daily quota, then ${PRICES.model} via x402.`, inputSchema: { type: "object", properties: { id: { type: "string", description: "model id, e.g. gpt-4o, claude-3-opus-20240229, gemini-1.5-pro" } }, required: ["id"] } },
+  { name: "check_api_status", title: "Is this API / provider down right now?",
+    description: `Check if an AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio... ~40 total) is up, degraded or down right now. Use BEFORE calling a provider's API, or right after you get 5xx/429/timeout errors, to decide whether to retry, wait or switch to a fallback. Returns a one-line summary first, then verdict, recommended_action, open incidents, affected components, checked_at and freshness (checked every ~4 min). Example: {"provider":"openai"}. Free within the daily quota, then ${PRICES.status} via x402. Alias: get_status.`,
+    inputSchema: { type: "object", properties: { provider: { type: "string", description: "Provider id (lowercase). Examples: openai, anthropic, google-ai, mistral, groq, github, stripe, cloudflare. Full list: list_providers.", examples: ["openai", "anthropic", "github"] } }, required: ["provider"] }, annotations: { title: "Is this API down?", ...RO } },
+  { name: "check_model_deprecation", title: "Is this model deprecated, and what replaces it?",
+    description: `Check if an LLM model id is active, deprecated or retired, its shutdown date, and the recommended replacement, from the provider's own deprecation page (OpenAI, Anthropic, Google, etc.). Use before hard-coding or calling a model, or when a model call fails with "model not found / deprecated". Returns summary first, then verdict, recommended_action (keep_using | plan_migration | switch_now | verify_with_provider), replacement, shutdown_date, evidence rows and freshness. Example: {"model":"gpt-4-0613"}. Free within the daily quota, then ${PRICES.model} via x402. Alias: get_model (param "id").`,
+    inputSchema: { type: "object", properties: { model: { type: "string", description: "Model id as used in the API call. Examples: gpt-4o, claude-3-opus-20240229, gemini-1.5-pro.", examples: ["gpt-4-0613", "claude-3-opus-20240229"] }, id: { type: "string", description: "Deprecated alias of model." } } }, annotations: { title: "Is this model deprecated?", ...RO } },
+  { name: "list_recent_api_changes", title: "What changed recently in AI/dev APIs?",
+    description: `List recent breaking or notable changes across AI and developer APIs: outages and recoveries, deprecation-page edits, model retirements and pricing-page edits. Use to answer "did anything change that could break my integration?" or to explain sudden errors. Returns summary first, then the change list with timestamps and source links. Example: {"provider":"anthropic","kind":"model_retirement"}. Free within the daily quota, then ${PRICES.changes} via x402. Alias: get_changes.`,
+    inputSchema: { type: "object", properties: { since: { type: "string", description: "ISO 8601 timestamp; default 7 days ago. Example: 2026-10-01T00:00:00Z" }, provider: { type: "string", description: "Optional provider id, e.g. openai" }, kind: { type: "string", enum: ["status", "deprecations", "model_retirement", "pricing"], description: "Optional change type filter" }, limit: { type: "number", description: "Max items, default 100, max 500" } } }, annotations: { title: "Recent API changes", ...RO } },
+  { name: "list_providers", title: "List tracked API providers", description: "List the ~40 AI and developer API providers Upstream tracks with their current state (operational/degraded/outage) and checked_at. Use to find the right provider id for check_api_status, or for a quick all-providers health overview. Free.", inputSchema: { type: "object", properties: {} }, annotations: { title: "List providers", ...RO } },
+  { name: "get_digest", title: "Daily AI/dev API breaking-changes digest", description: "Daily digest (free) of AI/dev API incidents, model deprecations/retirements, pricing-page changes and breaking MCP server changes. Use for a once-a-day catch-up instead of polling. Example: {} for the latest, or {\"date\":\"2026-10-14\"}.", inputSchema: { type: "object", properties: { date: { type: "string", description: "YYYY-MM-DD; omit for the latest issue" } } }, annotations: { title: "Daily digest", ...RO } },
 ];
+const ALIAS = { get_status: "check_api_status", get_model: "check_model_deprecation", get_changes: "list_recent_api_changes" };
 async function mcp(c, env, ctx) {
   let msg; try { msg = await c.req.json(); } catch { return c.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }, 400); }
   const { id, method, params = {} } = msg || {};
   const ok = (result) => c.json({ jsonrpc: "2.0", id, result });
   if (id === undefined) return c.body(null, 202);
-  if (method === "initialize") return ok({ protocolVersion: params.protocolVersion || "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "upstream", version: VERSION },
-    instructions: `Free: ${env.FREE_KEY_DAILY} calls/day with a free key (POST /v1/keys, send as X-API-Key) or ${env.FREE_ANON_DAILY}/day without one. Over quota, paid tools return an x402 payment requirement; retry with params._meta["x402/payment"] set to the signed payment payload.` });
+  if (method === "initialize") return ok({ protocolVersion: params.protocolVersion || "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "upstream", title: "Upstream", version: VERSION },
+    instructions: `Use check_api_status before calling an AI/dev API or after 5xx/timeouts; check_model_deprecation before using a model id; list_recent_api_changes to explain sudden breakage. Every result starts with a one-line summary. Free: ${env.FREE_KEY_DAILY} calls/day with a free key (POST /v1/keys, send as X-API-Key) or ${env.FREE_ANON_DAILY}/day without one. Over quota, paid tools return an x402 payment requirement; retry with params._meta["x402/payment"] set to the signed payment payload.` });
   if (method === "ping") return ok({});
   if (method === "tools/list") return ok({ tools: TOOLS });
   if (method !== "tools/call") return c.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } });
-  const a = params.arguments || {}, name = params.name;
-  const run = async () => name === "list_providers" ? await listProviders(env) : name === "get_status" ? await getStatus(env, a.provider) : name === "get_changes" ? await getChanges(env, a) : name === "get_model" ? await getModel(env, a.id) : null;
+  const a = params.arguments || {}, name = ALIAS[params.name] || params.name;
+  const run = async () => name === "list_providers" ? await listProviders(env) : name === "check_api_status" ? await getStatus(env, a.provider) : name === "list_recent_api_changes" ? await getChanges(env, a) : name === "check_model_deprecation" ? await getModel(env, a.model || a.id) : null;
   const res = (r, extra = {}) => ok({ content: [{ type: "text", text: JSON.stringify(r.body) }], structuredContent: r.body, isError: r.code >= 400, ...extra });
   if (name === "list_providers") return res(await run());
   if (name === "get_digest") { const r = a.date ? await digestBy(env, a.date) : await latestDigest(env); return res(r ? { code: 200, body: digestOut(r) } : { code: 404, body: { error: "no_issue", hint: "issues are published daily at 12:00 UTC" } }); }
-  if (!["get_status", "get_changes", "get_model"].includes(name)) return c.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "unknown tool" } });
+  if (!["check_api_status", "list_recent_api_changes", "check_model_deprecation"].includes(name)) return c.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "unknown tool" } });
   const pay = params._meta?.["x402/payment"];
   if (!pay) { const q = await takeFree(env, c); if (q.free) return res(await run()); }
   const x = x402(env); if (!x.ready) x.ready = x.server.initialize(); await x.ready;
-  const price = { get_status: PRICES.status, get_changes: PRICES.changes, get_model: PRICES.model }[name];
+  const price = { check_api_status: PRICES.status, list_recent_api_changes: PRICES.changes, check_model_deprecation: PRICES.model }[name];
   const reqs = await x.server.buildPaymentRequirements(x.opt(price));
   const resource = { url: new URL(c.req.url).origin + "/mcp#" + name, description: "Upstream MCP tool " + name, mimeType: "application/json" };
   if (!pay) {
@@ -352,7 +375,14 @@ app.get("/digest/:date{\\d{4}-\\d{2}-\\d{2}}", async (c) => { const r = await di
 
 app.post("/mcp", (c) => mcp(c, c.env, c.executionCtx));
 app.get("/mcp", (c) => c.json({ error: "Use POST (streamable HTTP, JSON responses)" }, 405));
-app.get("/.well-known/mcp", (c) => c.json({ name: "upstream", version: VERSION, transport: "streamable-http", url: new URL(c.req.url).origin + "/mcp", tools: TOOLS.map((t) => t.name) }));
+const CARD = (o) => ({ name: "upstream", title: "Upstream: is this AI/dev API down? is this model deprecated?", version: VERSION,
+  description: "Check if an AI or developer API (OpenAI, Anthropic, Gemini, GitHub, Stripe... ~40 providers) is down right now, whether a model is deprecated and what replaces it, and what changed recently. Decisive one-line summary first. Free daily quota, then x402 USDC on Base.",
+  transport: "streamable-http", url: o + "/mcp", serverInfo: { name: "upstream", title: "Upstream", version: VERSION }, capabilities: { tools: {} },
+  tools: TOOLS.map((t) => t.name), tool_details: TOOLS.map((t) => ({ name: t.name, title: t.title, description: t.description, annotations: t.annotations })), deprecated_aliases: ALIAS,
+  documentation: SITE, llms_txt: o + "/llms.txt", openapi: o + "/openapi.json", authentication: { required: false, optional: "X-API-Key header (free key: POST /v1/keys)" } });
+app.get("/.well-known/mcp", (c) => c.json(CARD(new URL(c.req.url).origin)));
+app.get("/.well-known/mcp.json", (c) => c.json(CARD(new URL(c.req.url).origin)));
+app.get("/.well-known/mcp/server-card.json", (c) => c.json(CARD(new URL(c.req.url).origin)));
 app.get("/llms.txt", (c) => c.text(LLMS(new URL(c.req.url).origin, c.env)));
 app.get("/.well-known/x402", (c) => c.json({ version: 1, resources: ["/x402/status/{provider}", "/x402/changes", "/x402/model/{id}"].map((x) => new URL(c.req.url).origin + x) }));
 app.get("/openapi.json", (c) => c.json(openapi(new URL(c.req.url).origin, c.env)));

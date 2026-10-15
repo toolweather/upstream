@@ -2,13 +2,25 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.toolweather/upstream",
   "title": "Upstream",
-  "description": "Is the AI/dev API your agent depends on up now? Live status of ~40 APIs plus model deprecations.",
-  "repository": {"url": "https://github.com/toolweather/upstream", "source": "github"},
+  "description": "Is this AI/dev API down? Is this model deprecated, what replaces it? Live status for ~40 APIs.",
+  "repository": {
+    "url": "https://github.com/toolweather/upstream",
+    "source": "github"
+  },
   "websiteUrl": "https://upstream-api.pages.dev",
-  "version": "0.1.0",
-  "remotes": [{
-    "type": "streamable-http",
-    "url": "https://upstream.toolweather.workers.dev/mcp",
-    "headers": [{"name": "X-API-Key", "description": "Optional free key (POST https://upstream.toolweather.workers.dev/v1/keys) for 500 free calls/day; 50/day without one", "isRequired": false, "isSecret": true}]
-  }]
+  "version": "0.2.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://upstream.toolweather.workers.dev/mcp",
+      "headers": [
+        {
+          "name": "X-API-Key",
+          "description": "Optional free key (POST https://upstream.toolweather.workers.dev/v1/keys) for 500 free calls/day; 50/day without one",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
 }

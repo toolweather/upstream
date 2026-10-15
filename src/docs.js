@@ -3,6 +3,12 @@ export const LLMS = (o, env) => `# Upstream
 
 > Is the AI or developer API your agent depends on up right now, and what's changing? Upstream watches ~40 providers (OpenAI, Anthropic, Google AI, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio...) every few minutes, and tracks model deprecation, retirement and pricing pages for the major LLM providers.
 
+## When to use (for agents)
+- Before calling OpenAI/Anthropic/Gemini/GitHub/Stripe..., or after 5xx/429/timeouts: "is this API down?" -> GET ${o}/status/{provider} (MCP: check_api_status). Read "summary" and "recommended_action": retry, wait or switch to a fallback.
+- Before using a model id, or on "model not found": "is this model deprecated and what replaces it?" -> GET ${o}/model/{id} (MCP: check_model_deprecation).
+- "Did something change that broke my integration?" -> GET ${o}/changes (MCP: list_recent_api_changes).
+- Every answer starts with a one-line "summary", plus "verdict", "checked_at" and "freshness".
+
 ## Free tier (most agents never pay)
 - ${env.FREE_KEY_DAILY} calls/day with a free key. Get one instantly: POST ${o}/v1/keys, then send header X-API-Key.
 - ${env.FREE_ANON_DAILY} calls/day with no key at all.
@@ -23,7 +29,7 @@ Network: ${env.X402_NETWORK} (Base mainnet, USDC). Unpaid calls over quota get H
 - GET ${o}/changes?since=ISO&provider=&kind=status|deprecations|model_retirement|pricing: change feed
 - GET ${o}/model/{id}: active | deprecated | retired | unknown, with shutdown date, replacement and the exact table row it came from
 - POST ${o}/v1/watches {"provider","url"}: signed webhooks (X-Upstream-Signature: sha256=HMAC(secret, body))
-- POST ${o}/mcp: MCP (streamable HTTP) with tools list_providers, get_status, get_changes, get_model. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
+- POST ${o}/mcp: MCP (streamable HTTP) with tools check_api_status {provider} (is this API down?), check_model_deprecation {model} (is this model deprecated, what replaces it?), list_recent_api_changes {since,provider,kind}, list_providers, get_digest. Old names get_status/get_model/get_changes still work. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
 - OpenAPI: ${o}/openapi.json
 
 ## Daily breaking-changes digest (free)
@@ -50,13 +56,13 @@ export const openapi = (o, env) => {
   const P = (n, d) => ({ name: n, in: "path", required: true, description: d, schema: { type: "string" } });
   const Q = ["since", "provider", "kind", "limit"].map((n) => ({ name: n, in: "query", required: false, schema: { type: "string" } }));
   const ops = (pre, paid) => ({
-    [pre + "/status/{provider}"]: { get: { operationId: (paid ? "paid_" : "") + "getStatus", summary: "Status - is this AI/dev API provider up right now (incidents, affected components)", tags: ["Status"], parameters: [P("provider", "provider id from GET /providers, e.g. openai, anthropic, github, stripe")], ...(paid ? { "x-payment-info": xpi("0.003000") } : { security: free, "x-price-over-free-tier": xpi("0.003000") }), responses: { ...ok, ...pay } } },
-    [pre + "/changes"]: { get: { operationId: (paid ? "paid_" : "") + "getChanges", summary: "Changes - feed of outages, deprecations, model retirements and pricing-page edits", tags: ["Changes"], parameters: Q, ...(paid ? { "x-payment-info": xpi("0.010000") } : { security: free, "x-price-over-free-tier": xpi("0.010000") }), responses: { ...ok, ...pay } } },
-    [pre + "/model/{id}"]: { get: { operationId: (paid ? "paid_" : "") + "getModel", summary: "Model - is this model active, deprecated or retired; shutdown date and replacement", tags: ["Models"], parameters: [P("id", "model id, e.g. gpt-4o-2024-08-06, claude-3-opus-20240229, gemini-2.0-flash")], ...(paid ? { "x-payment-info": xpi("0.003000") } : { security: free, "x-price-over-free-tier": xpi("0.003000") }), responses: { ...ok, ...pay } } },
+    [pre + "/status/{provider}"]: { get: { operationId: (paid ? "paid_" : "") + "getStatus", summary: "Is this AI/dev API provider down right now? Verdict, recommended action, incidents", description: "Use before calling a provider or after 5xx/timeouts. Response starts with summary, verdict (up|degraded|partially down|down|unknown), recommended_action, freshness, checked_at.", tags: ["Status"], parameters: [P("provider", "provider id from GET /providers, e.g. openai, anthropic, github, stripe")], ...(paid ? { "x-payment-info": xpi("0.003000") } : { security: free, "x-price-over-free-tier": xpi("0.003000") }), responses: { ...ok, ...pay } } },
+    [pre + "/changes"]: { get: { operationId: (paid ? "paid_" : "") + "getChanges", summary: "What changed recently: outages, deprecations, model retirements, pricing edits", description: "Response starts with a one-line summary and checked_at.", tags: ["Changes"], parameters: Q, ...(paid ? { "x-payment-info": xpi("0.010000") } : { security: free, "x-price-over-free-tier": xpi("0.010000") }), responses: { ...ok, ...pay } } },
+    [pre + "/model/{id}"]: { get: { operationId: (paid ? "paid_" : "") + "getModel", summary: "Is this model deprecated, and what replaces it?", description: "Response starts with summary, verdict (active|deprecated|retired|unknown), recommended_action (keep_using|plan_migration|switch_now|verify_with_provider), replacement, shutdown_date, freshness.", tags: ["Models"], parameters: [P("id", "model id, e.g. gpt-4o-2024-08-06, claude-3-opus-20240229, gemini-2.0-flash")], ...(paid ? { "x-payment-info": xpi("0.003000") } : { security: free, "x-price-over-free-tier": xpi("0.003000") }), responses: { ...ok, ...pay } } },
   });
   return { openapi: "3.1.0",
-    info: { title: "Upstream", version: "0.1.0", contact: { email: "toolweather.app@proton.me" },
-      description: `Live status and breaking-change feed for ~40 AI and developer APIs. Free tier: ${env.FREE_KEY_DAILY} calls/day per free key (POST /v1/keys), ${env.FREE_ANON_DAILY}/day anonymous, 1 free webhook watch. Over the free tier: x402 pay-per-call on ${env.X402_NETWORK}.`,
+    info: { title: "Upstream", version: "0.2.0", contact: { email: "toolweather.app@proton.me" },
+      description: `Is this AI/dev API down? Is this model deprecated and what replaces it? Live status and breaking-change feed for ~40 AI and developer APIs. Free tier: ${env.FREE_KEY_DAILY} calls/day per free key (POST /v1/keys), ${env.FREE_ANON_DAILY}/day anonymous, 1 free webhook watch. Over the free tier: x402 pay-per-call on ${env.X402_NETWORK}.`,
       "x-guidance": "Before calling an AI or developer API (OpenAI, Anthropic, Gemini, GitHub, Stripe...), GET /status/{provider} to see if it is up; GET /model/{id} to check if a model is deprecated or retired and its replacement; GET /changes?since=ISO for what changed. The /x402/* paths are the same data and always paid per call; the plain paths are free within the daily quota and switch to x402 when it is used up." },
     servers: [{ url: o }],
     components: { securitySchemes: { apiKey: { type: "apiKey", in: "header", name: "X-API-Key" } } },

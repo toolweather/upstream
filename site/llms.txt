@@ -2,6 +2,12 @@
 
 > Is the AI or developer API your agent depends on up right now, and what's changing? Upstream watches ~40 providers (OpenAI, Anthropic, Google AI, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio...) every few minutes, and tracks model deprecation, retirement and pricing pages for the major LLM providers.
 
+## When to use (for agents)
+- Before calling OpenAI/Anthropic/Gemini/GitHub/Stripe..., or after 5xx/429/timeouts: "is this API down?" -> GET https://upstream.toolweather.workers.dev/status/{provider} (MCP: check_api_status). Read "summary" and "recommended_action": retry, wait or switch to a fallback.
+- Before using a model id, or on "model not found": "is this model deprecated and what replaces it?" -> GET https://upstream.toolweather.workers.dev/model/{id} (MCP: check_model_deprecation).
+- "Did something change that broke my integration?" -> GET https://upstream.toolweather.workers.dev/changes (MCP: list_recent_api_changes).
+- Every answer starts with a one-line "summary", plus "verdict", "checked_at" and "freshness".
+
 ## Free tier (most agents never pay)
 - 500 calls/day with a free key. Get one instantly: POST https://upstream.toolweather.workers.dev/v1/keys, then send header X-API-Key.
 - 50 calls/day with no key at all.
@@ -9,7 +15,7 @@
 - Every response carries X-Free-Remaining.
 
 ## Over the free quota: x402 pay-per-call (USDC)
-Network: eip155:8453 (Base mainnet, USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
+Network: eip155:8453 (Base mainnet, USDC). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
 - Always-paid lane (no quota, same data): /x402/status/{provider}, /x402/changes, /x402/model/{id}
 - GET /status/:provider: $0.003
 - GET /changes: $0.01
@@ -22,7 +28,7 @@ Network: eip155:8453 (Base mainnet, USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02
 - GET https://upstream.toolweather.workers.dev/changes?since=ISO&provider=&kind=status|deprecations|model_retirement|pricing: change feed
 - GET https://upstream.toolweather.workers.dev/model/{id}: active | deprecated | retired | unknown, with shutdown date, replacement and the exact table row it came from
 - POST https://upstream.toolweather.workers.dev/v1/watches {"provider","url"}: signed webhooks (X-Upstream-Signature: sha256=HMAC(secret, body))
-- POST https://upstream.toolweather.workers.dev/mcp: MCP (streamable HTTP) with tools list_providers, get_status, get_changes, get_model. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
+- POST https://upstream.toolweather.workers.dev/mcp: MCP (streamable HTTP) with tools check_api_status {provider} (is this API down?), check_model_deprecation {model} (is this model deprecated, what replaces it?), list_recent_api_changes {since,provider,kind}, list_providers, get_digest. Old names get_status/get_model/get_changes still work. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
 - OpenAPI: https://upstream.toolweather.workers.dev/openapi.json
 
 ## Daily breaking-changes digest (free)
