@@ -1,5 +1,8 @@
 # Upstream
 
+Part of the **Toolweather suite**. The same tools are also available on the Toolweather MCP at `https://toolweather.toolweather.workers.dev/mcp` (proxied here). This Worker remains the source of truth for REST, digests and x402 payments.
+
+
 Live status and breaking-change feed for the AI and developer APIs agents depend on: outages, model deprecations and retirements, pricing-page changes. ~40 providers.
 
 - Site: https://upstream-api.pages.dev

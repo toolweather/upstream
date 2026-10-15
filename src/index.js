@@ -54,6 +54,13 @@ async function takeFree(env, c) {
     if (used < lim) { await env.DB.prepare("UPDATE keys SET day=?, used=? WHERE key_hash=?").bind(d, used + 1, kr.key_hash).run(); return { free: true, plan: "free_key", remaining: lim - used - 1 }; }
     return { free: false, plan: "free_key", remaining: 0 };
   }
+  // Toolweather suite proxy: per-client free quota (same as free-key daily) identified by X-Tw-Bundle-Client
+  const bsec = c.req.header("x-tw-bundle-secret"), bcli = c.req.header("x-tw-bundle-client");
+  if (env.BUNDLE_PROXY_SECRET && bsec && bsec === env.BUNDLE_PROXY_SECRET && bcli && /^[a-f0-9]{16,128}$/i.test(bcli)) {
+    const lim = +env.FREE_KEY_DAILY, ih = await sha("bundle|" + bcli.toLowerCase());
+    const r = await env.DB.prepare("INSERT INTO anon(ip_hash,day,used) VALUES(?,?,1) ON CONFLICT(ip_hash,day) DO UPDATE SET used=used+1 WHERE used<? RETURNING used").bind(ih, d, lim).first();
+    return r ? { free: true, plan: "bundle", remaining: lim - r.used } : { free: false, plan: "bundle", remaining: 0 };
+  }
   const ih = await ipHash(c.env, "anon", c.req.raw), lim = +env.FREE_ANON_DAILY;
   const r = await env.DB.prepare("INSERT INTO anon(ip_hash,day,used) VALUES(?,?,1) ON CONFLICT(ip_hash,day) DO UPDATE SET used=used+1 WHERE used<? RETURNING used").bind(ih, d, lim).first();
   return r ? { free: true, plan: "anonymous", remaining: lim - r.used } : { free: false, plan: "anonymous", remaining: 0 };
