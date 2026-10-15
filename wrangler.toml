@@ -6,9 +6,9 @@ workers_dev = true
 account_id = "9c9d3ecdf6a4b87be13756af2efadcce"
 
 [vars]
-PAY_TO = "0xf56910A23FB762e6DF81e6f720C43eDc951aA3e3"
-X402_NETWORK = "eip155:84532"
-FACILITATOR_URL = "https://x402.org/facilitator"
+PAY_TO = "0xb9D9af3Bf4C352fF4e6D3cf480bFc31CB832Ce29"
+X402_NETWORK = "eip155:8453"
+FACILITATOR_URL = "https://facilitator.payai.network"
 FREE_KEY_DAILY = "500"
 FREE_ANON_DAILY = "50"
 EMAIL_SENDING_ENABLED = "false"

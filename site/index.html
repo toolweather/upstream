@@ -38,7 +38,7 @@ table{border-collapse:collapse;width:100%;font-size:15px}td,th{border-bottom:1px
 <tr><td><code>GET /changes?since=</code></td><td>Outages, deprecations, retirements, pricing edits</td><td>$0.01</td></tr>
 <tr><td><code>POST /v1/watches</code></td><td>Extra change-alert webhook (30 days)</td><td>$0.05</td></tr></table>
 <p class="mut">Prefer to just pay? The same data is at <code>/x402/status/:provider</code>, <code>/x402/model/:id</code> and <code>/x402/changes</code>, always pay-per-call with no key.</p>
-<p class="note">Preview: payments currently run on the Base Sepolia <b>testnet</b>, so no real money moves yet.</p>
+<p class="note">Payments settle in USDC on Base mainnet.</p>
 
 <h2>Daily digest</h2>
 <p>A short, free <a href="/digest/">breaking-changes digest</a> every day at 12:00 UTC: incidents, model retirements, pricing changes and breaking MCP server changes. <a href="https://upstream.toolweather.workers.dev/digest/feed.xml">RSS</a> · <a href="https://upstream.toolweather.workers.dev/digest/latest">JSON</a>.</p>

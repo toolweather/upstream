@@ -10,7 +10,7 @@ export const LLMS = (o, env) => `# Upstream
 - Every response carries X-Free-Remaining.
 
 ## Over the free quota: x402 pay-per-call (USDC)
-Network: ${env.X402_NETWORK} (currently Base Sepolia testnet). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
+Network: ${env.X402_NETWORK} (Base mainnet, USDC). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
 - Always-paid lane (no quota, same data): /x402/status/{provider}, /x402/changes, /x402/model/{id}
 - GET /status/:provider: $0.003
 - GET /changes: $0.01

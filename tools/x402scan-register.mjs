@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { createSIWxPayload, encodeSIWxHeader } from "@x402/extensions/sign-in-with-x";
 import { privateKeyToAccount } from "viem/accounts";
-const pk = readFileSync("/workspace/.secrets/upstream_testnet_key", "utf8").match(/PRIVATE_KEY=(0x[0-9a-f]+)/i)[1];
+const pk = readFileSync("/workspace/.secrets/upstream_mainnet_wallet", "utf8").match(/PRIVATE_KEY=(0x[0-9a-f]+)/i)[1];
 const acct = privateKeyToAccount(pk);
 const url = process.argv[2] || "https://www.x402scan.com/api/x402/registry/register-origin";
 const body = JSON.stringify({ origin: "https://upstream.toolweather.workers.dev" });
