@@ -8,6 +8,7 @@ import { pageTokens, parseModels } from "./models.js";
 import { twSnapshot, buildDigest, saveDigest, digestOut, atom, subscribe, confirmOrUnsub, enqueueDigest } from "./digest.js";
 import { drainOutbox, mailReady } from "./mailer.js";
 import { LLMS, openapi, SITE } from "./docs.js";
+import { STATUS_FRESH_SECONDS, cronPlan, planStatusWrites, pageWriteNeeded, pageErrorWriteNeeded, modelWriteNeeded, metaWriteNeeded, parseProbe, mergePageProbe, laterIso, modelSeenAt, pageIdForSource } from "./persist.js";
 
 const VERSION = "0.2.0";
 const PRICES = { status: "$0.003", changes: "$0.01", model: "$0.003", watch: "$0.05" };
@@ -77,12 +78,19 @@ function rowOut(p, r) {
     status_page: p.page, checked_at: r.checked_at, age_seconds: age, state_since: r.changed_at, error: r.error || undefined,
     safe_to_call: ["operational", "maintenance"].includes(r.indicator) ? true : r.indicator === "major_outage" ? false : r.indicator === "unknown" ? null : "with_retries", sponsored: null };
 }
+async function loadProbe(env) {
+  const rows = (await env.DB.prepare("SELECT k,v FROM meta WHERE k IN ('probe_clock','last_cron')").all()).results;
+  const m = Object.fromEntries(rows.map((r) => [r.k, r.v]));
+  const probe = parseProbe(m.probe_clock);
+  return { probe, lastCron: probe.status || m.last_cron || null };
+}
 async function getStatus(env, id) {
   const p = PBY[id]; if (!p) return { code: 404, body: { error: "unknown_provider", hint: "GET /providers for the list" } };
-  const r = await env.DB.prepare("SELECT * FROM status WHERE provider=?").bind(id).first();
+  const [r, clock] = await Promise.all([env.DB.prepare("SELECT * FROM status WHERE provider=?").bind(id).first(), loadProbe(env)]);
+  if (r) r.checked_at = laterIso(r.checked_at, clock.probe.status);
   const pages = PAGES.filter((x) => x.provider === id).map((x) => ({ kind: x.kind, url: x.url }));
   const recent = (await env.DB.prepare("SELECT kind,title,at FROM changes WHERE provider=? ORDER BY id DESC LIMIT 5").bind(id).all()).results;
-  const o = rowOut(p, r), fr = freshness(o.age_seconds, 300);
+  const o = rowOut(p, r), fr = freshness(o.age_seconds, STATUS_FRESH_SECONDS);
   const act = { operational: "Safe to call.", maintenance: "Safe to call; scheduled maintenance in progress, expect brief errors.", degraded: "Call with retries and backoff; have a fallback provider ready.", partial_outage: "Expect failures; retry with backoff or route to a fallback provider.", major_outage: "Do not rely on it now; route to a fallback provider.", unknown: "Status unknown (our check failed, not necessarily the provider); proceed with retries." }[o.state] || "Proceed with care.";
   const verdict = { operational: "up", maintenance: "up", degraded: "degraded", partial_outage: "partially down", major_outage: "down", unknown: "unknown" }[o.state] || o.state;
   const line = `${p.name} is ${verdict}${o.summary ? " (" + o.summary + ")" : ""}${o.state_since ? " since " + o.state_since : ""}. ${act}`;
@@ -96,7 +104,7 @@ async function getChanges(env, q) {
   const rs = (await env.DB.prepare(sql).bind(...a).all()).results.map((r) => ({ ...r, detail: JSON.parse(r.detail || "null") }));
   const byKind = rs.reduce((m, r) => (m[r.kind] = (m[r.kind] || 0) + 1, m), {});
   const summ = rs.length ? `${rs.length} change(s) since ${a[0]}${q.provider ? " for " + q.provider : ""}: ` + Object.entries(byKind).map(([k, n]) => `${n} ${k}`).join(", ") + `. Latest: ${rs[0].title}.` : `No changes since ${a[0]}${q.provider ? " for " + q.provider : ""}. Nothing to act on.`;
-  return { code: 200, body: { summary: summ, checked_at: now(), freshness: { data_as_of: rs[0]?.at || null, note: "status changes recorded within ~4 min; doc pages re-read every few hours" }, since: a[0], count: rs.length, kinds: ["status", "deprecations", "model_retirement", "pricing"], changes: rs } };
+  return { code: 200, body: { summary: summ, checked_at: now(), freshness: { data_as_of: rs[0]?.at || null, note: "status changes recorded within ~5 min; doc pages re-read every few hours" }, since: a[0], count: rs.length, kinds: ["status", "deprecations", "model_retirement", "pricing"], changes: rs } };
 }
 const norm = (s) => String(s).toLowerCase().replace(/^models\//, "").trim();
 async function getModel(env, id) {
@@ -114,12 +122,14 @@ async function getModel(env, id) {
     : st === "deprecated" ? `${m} is DEPRECATED${info.shutdown_date ? ", shutdown " + info.shutdown_date : ""}. Plan migration to ${rep || "a current model from the same provider"}.`
     : st === "active" ? `${m} is active with no announced shutdown. Safe to keep using.`
     : `${m} is not listed on any tracked deprecation page. Probably fine, but not confirmed${sugg.length ? "; see did_you_mean" : ""}.`;
-  const seen = best?.seen_at || null;
+  const clock = rows.length ? await loadProbe(env) : null;
+  const seenOf = (r) => modelSeenAt(r.seen_at, clock?.probe.pages[pageIdForSource(r.source)], r.model);
+  const seen = best ? seenOf(best) : null;
   return { code: 200, body: { summary, verdict: st, recommended_action: st === "retired" ? "switch_now" : st === "deprecated" ? "plan_migration" : st === "active" ? "keep_using" : "verify_with_provider",
     checked_at: now(), freshness: { data_as_of: seen, age_seconds: seen ? Math.round((Date.now() - Date.parse(seen)) / 1000) : null, note: "deprecation pages are re-read every few hours" },
     model: m, status: st,
     shutdown_date: info.shutdown_date || null, deprecated_on: info.deprecated_on || null, replacement: info.replacement || null,
-    evidence: rows.map((r) => ({ provider: r.provider, status: r.status, ...JSON.parse(r.dates || "{}"), row: r.snippet, source: r.source, seen_at: r.seen_at })),
+    evidence: rows.map((r) => ({ provider: r.provider, status: r.status, ...JSON.parse(r.dates || "{}"), row: r.snippet, source: r.source, seen_at: seenOf(r) })),
     did_you_mean: sugg.length ? sugg : undefined, on_openrouter: orIds?.length ? orIds : undefined,
     states: "active = the provider's page explicitly lists it as active or with no shutdown date; deprecated = explicitly deprecated, shutdown in the future; retired = shutdown date has passed; unknown = not explicitly listed on any tracked deprecation page (not a guarantee it is live).",
     sponsored: null } };
@@ -152,24 +162,16 @@ async function checkProvider(p) {
     return { indicator: ok ? (ms > 6000 ? "degraded" : "operational") : "partial_outage", description: ok ? `API reachable (HTTP ${st}, ${ms} ms)` : `API not reachable (HTTP ${st || "timeout"})`, incidents: [], components: [] };
   } catch (e) { return { indicator: "unknown", description: "status source unreachable", incidents: [], components: [], error: String(e).slice(0, 200) }; }
 }
-async function runStatusBatch(env, ctx, minute) {
-  const batch = PROVIDERS.filter((_, i) => i % 4 === minute % 4);
-  const res = await Promise.all(batch.map(async (p) => [p, await checkProvider(p)]));
-  const old = Object.fromEntries((await env.DB.prepare(`SELECT provider,indicator,changed_at FROM status WHERE provider IN (${batch.map(() => "?").join(",")})`).bind(...batch.map((p) => p.id)).all()).results.map((r) => [r.provider, r]));
-  const t = now(), st = [], events = [];
-  for (const [p, r] of res) {
-    const o = old[p.id], changed = !o || o.indicator !== r.indicator;
-    // "unknown" means our fetch failed, not the provider: don't emit a change for it
-    if (o && changed && r.indicator !== "unknown" && o.indicator !== "unknown") {
-      const ev = { provider: p.id, kind: "status", title: `${p.name}: ${o.indicator} → ${r.indicator}`, detail: { from: o.indicator, to: r.indicator, summary: r.description, incidents: r.incidents.slice(0, 5) }, source: p.page, at: t };
-      events.push(ev);
-    }
-    st.push(env.DB.prepare("INSERT INTO status VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET indicator=excluded.indicator,description=excluded.description,incidents=excluded.incidents,components=excluded.components,checked_at=excluded.checked_at,changed_at=excluded.changed_at,error=excluded.error")
-      .bind(p.id, r.indicator, r.description || null, JSON.stringify(r.incidents), JSON.stringify(r.components), t, changed ? t : o.changed_at, r.error || null));
-  }
-  for (const e of events) st.push(env.DB.prepare("INSERT INTO changes(provider,kind,title,detail,source,at) VALUES(?,?,?,?,?,?)").bind(e.provider, e.kind, e.title, JSON.stringify(e.detail), e.source, e.at));
-  await env.DB.batch(st);
-  if (events.length) ctx.waitUntil(notify(env, events));
+const changeStmt = (env, e) => env.DB.prepare("INSERT INTO changes(provider,kind,title,detail,source,at) VALUES(?,?,?,?,?,?)").bind(e.provider, e.kind, e.title, JSON.stringify(e.detail), e.source, e.at);
+const probeStmt = (env, probe) => env.DB.prepare("INSERT INTO meta VALUES('probe_clock',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(JSON.stringify(probe));
+async function batchAll(env, st) { for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90)); }
+async function collectStatus(env, t) {
+  const res = await Promise.all(PROVIDERS.map(async (p) => [p, await checkProvider(p)]));
+  const oldRows = (await env.DB.prepare(`SELECT provider,indicator,description,incidents,components,changed_at,error FROM status WHERE provider IN (${PROVIDERS.map(() => "?").join(",")})`).bind(...PROVIDERS.map((p) => p.id)).all()).results;
+  const { writes, events } = planStatusWrites(Object.fromEntries(oldRows.map((r) => [r.provider, r])), res, t);
+  const statements = writes.map((w) => env.DB.prepare("INSERT INTO status VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET indicator=excluded.indicator,description=excluded.description,incidents=excluded.incidents,components=excluded.components,checked_at=excluded.checked_at,changed_at=excluded.changed_at,error=excluded.error").bind(w.provider, w.indicator, w.description, w.incidents, w.components, w.checked_at, w.changed_at, w.error));
+  for (const e of events) statements.push(changeStmt(env, e));
+  return { statements, events };
 }
 
 async function pageText(resp) {
@@ -184,43 +186,49 @@ async function pageText(resp) {
   return parts.join("").replace(/&nbsp;|&#160;/g, " ").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/[ \t]+/g, " ")
     .split("\n").map((l) => l.trim().replace(/^\| ?/, "")).filter((l) => l.length > 2 && l.length < 1500).join("\n");
 }
-async function runPage(env, ctx, pg) {
-  const t = now();
+async function collectPage(env, pg, t) {
   try {
     const r = await fetchT(pg.url, 15000, { headers: { accept: "text/html" } });
     if (!r.ok) throw new Error("HTTP " + r.status);
     const isModels = pg.kind === "deprecations";
     const [text, models] = await Promise.all([pageText(isModels ? r.clone() : r), isModels ? pageTokens(r).then((tk) => parseModels(tk, pg, today())) : null]);
     const h = await sha(text);
-    const old = await env.DB.prepare("SELECT hash,text FROM pages WHERE id=?").bind(pg.id).first();
-    const st = [env.DB.prepare("INSERT INTO pages VALUES(?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,text=excluded.text,checked_at=excluded.checked_at,changed_at=CASE WHEN pages.hash=excluded.hash THEN pages.changed_at ELSE excluded.changed_at END,error=NULL")
-      .bind(pg.id, pg.provider, pg.url, h, text.slice(0, 900000), t, t)];
+    const old = await env.DB.prepare("SELECT hash,text,error FROM pages WHERE id=?").bind(pg.id).first();
+    const st = [];
     const events = [];
-    if (old && old.hash !== h) {
+    if (pageWriteNeeded(old, h)) st.push(env.DB.prepare("INSERT INTO pages VALUES(?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,text=excluded.text,checked_at=excluded.checked_at,changed_at=CASE WHEN pages.hash=excluded.hash THEN pages.changed_at ELSE excluded.changed_at END,error=NULL").bind(pg.id, pg.provider, pg.url, h, text.slice(0, 900000), t, t));
+    if (old?.text && old.hash !== h) {
       const a = new Set(old.text.split("\n")), b = new Set(text.split("\n"));
       const added = [...b].filter((l) => !a.has(l)), removed = [...a].filter((l) => !b.has(l));
       if (added.length || removed.length) events.push({ provider: pg.provider, kind: pg.kind, title: `${PBY[pg.provider].name} ${pg.kind} page changed (+${added.length} / -${removed.length} lines)`, detail: { added: added.slice(0, 40), removed: removed.slice(0, 40) }, source: pg.url, at: t });
     }
     if (models) {
-      const prev = Object.fromEntries((await env.DB.prepare("SELECT model,status FROM models WHERE provider=? AND source=?").bind(pg.provider, pg.url).all()).results.map((r) => [r.model, r.status]));
+      const prev = Object.fromEntries((await env.DB.prepare("SELECT model,status,dates,snippet,source FROM models WHERE provider=? AND source=?").bind(pg.provider, pg.url).all()).results.map((row) => [row.model, row]));
       const hadPrev = Object.keys(prev).length > 0;
       for (const [m, v] of models) {
         const info = { shutdown_date: v.shutdown_date || null, deprecated_on: v.deprecated_on || null, replacement: v.replacement || null, section: v.section || null, note: v.note || v.tentative_retirement || null };
-        st.push(env.DB.prepare("INSERT INTO models VALUES(?,?,?,?,?,?,?) ON CONFLICT(model,provider) DO UPDATE SET status=excluded.status,dates=excluded.dates,snippet=excluded.snippet,source=excluded.source,seen_at=excluded.seen_at")
-          .bind(m, pg.provider, v.status, JSON.stringify(info), v.evidence, pg.url, t));
-        if (hadPrev && prev[m] !== v.status && v.status !== "active") events.push({ provider: pg.provider, kind: "model_retirement", title: `${m} (${PBY[pg.provider].name}): ${prev[m] || "new"} → ${v.status}${info.shutdown_date ? ", shutdown " + info.shutdown_date : ""}`, detail: { model: m, from: prev[m] || null, to: v.status, ...info, evidence: v.evidence }, source: pg.url, at: t });
+        const dates = JSON.stringify(info);
+        if (modelWriteNeeded(prev[m], { status: v.status, dates, snippet: v.evidence, source: pg.url })) st.push(env.DB.prepare("INSERT INTO models VALUES(?,?,?,?,?,?,?) ON CONFLICT(model,provider) DO UPDATE SET status=excluded.status,dates=excluded.dates,snippet=excluded.snippet,source=excluded.source,seen_at=excluded.seen_at").bind(m, pg.provider, v.status, dates, v.evidence, pg.url, t));
+        if (hadPrev && prev[m]?.status !== v.status && v.status !== "active") events.push({ provider: pg.provider, kind: "model_retirement", title: `${m} (${PBY[pg.provider].name}): ${prev[m]?.status || "new"} → ${v.status}${info.shutdown_date ? ", shutdown " + info.shutdown_date : ""}`, detail: { model: m, from: prev[m]?.status || null, to: v.status, ...info, evidence: v.evidence }, source: pg.url, at: t });
       }
     }
-    for (const e of events.slice(0, 50)) st.push(env.DB.prepare("INSERT INTO changes(provider,kind,title,detail,source,at) VALUES(?,?,?,?,?,?)").bind(e.provider, e.kind, e.title, JSON.stringify(e.detail), e.source, e.at));
-    for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
-    if (events.length) ctx.waitUntil(notify(env, events));
+    for (const e of events.slice(0, 50)) st.push(changeStmt(env, e));
+    return { statements: st, events, pageState: { at: t, ok_at: t, ...(models ? { models: [...models.keys()].sort() } : {}) } };
   } catch (e) {
-    await env.DB.prepare("INSERT INTO pages(id,provider,url,checked_at,error) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,error=excluded.error").bind(pg.id, pg.provider, pg.url, t, String(e).slice(0, 200)).run();
+    const err = String(e).slice(0, 200);
+    const old = await env.DB.prepare("SELECT error FROM pages WHERE id=?").bind(pg.id).first();
+    const st = pageErrorWriteNeeded(old, err) ? [env.DB.prepare("INSERT INTO pages(id,provider,url,checked_at,error) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,error=excluded.error").bind(pg.id, pg.provider, pg.url, t, err)] : [];
+    return { statements: st, events: [], pageState: { at: t } };
   }
 }
 async function refreshCatalog(env) {
-  try { const j = await (await fetchT("https://openrouter.ai/api/v1/models", 15000)).json();
-    await env.DB.prepare("INSERT INTO meta VALUES('openrouter_models',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(JSON.stringify(j.data.map((m) => norm(m.id)))).run(); } catch {}
+  try {
+    const j = await (await fetchT("https://openrouter.ai/api/v1/models", 15000)).json();
+    const v = JSON.stringify([...new Set(j.data.map((m) => norm(m.id)))].sort());
+    const old = await env.DB.prepare("SELECT v FROM meta WHERE k='openrouter_models'").first();
+    if (!metaWriteNeeded(old?.v ?? null, v)) return;
+    await env.DB.prepare("INSERT INTO meta VALUES('openrouter_models',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(v).run();
+  } catch {}
 }
 
 // ---------- webhooks ----------
@@ -240,15 +248,15 @@ async function notify(env, events) {
 const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const TOOLS = [
   { name: "check_api_status", title: "Is this API / provider down right now?",
-    description: `Check whether one AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio, ~40 total) is up, degraded, or down right now. Use before calling that provider, or right after 5xx/429/timeouts, to choose retry, wait, or a fallback. Not for a model id (check_model_deprecation), the filtered change feed (list_recent_api_changes), or the daily rollup (get_digest). Returns summary, verdict (up|degraded|partially down|down|unknown), recommended_action, incidents, affected_components, checked_at, and freshness; status is rechecked about every 4 minutes. An unknown provider id returns 404 unknown_provider. Example: {"provider":"openai"}. Free within the daily quota, then ${PRICES.status} via x402. Alias: get_status.`,
+    description: `Check whether one AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio, ~40 total) is up, degraded, or down right now. Use before calling that provider, or right after 5xx/429/timeouts, to choose retry, wait, or a fallback. Not for a model id (check_model_deprecation), the filtered change feed (list_recent_api_changes), or the daily rollup (get_digest). Returns summary, verdict (up|degraded|partially down|down|unknown), recommended_action, incidents, affected_components, checked_at, and freshness; status is rechecked about every 5 minutes. An unknown provider id returns 404 unknown_provider. Example: {"provider":"openai"}. Free within the daily quota, then ${PRICES.status} via x402. Alias: get_status.`,
     inputSchema: { type: "object", properties: { provider: { type: "string", description: "Lowercase provider id from list_providers, not the display name. Examples: openai, anthropic, google-ai, mistral, groq, github, stripe, cloudflare.", examples: ["openai", "anthropic", "github"] } }, required: ["provider"] }, annotations: { title: "Is this API down?", ...RO } },
   { name: "check_model_deprecation", title: "Is this model deprecated, and what replaces it?",
     description: `Check whether one LLM model id is active, deprecated, or retired, plus its shutdown date and replacement, from that provider's deprecation page (OpenAI, Anthropic, Google, and other tracked LLM vendors). Use before hard-coding or calling a model, or when a call fails with model-not-found. Not for API uptime (check_api_status) and not for a retirement feed (list_recent_api_changes with kind model_retirement, or get_digest). Returns summary, verdict (active|deprecated|retired|unknown), recommended_action (keep_using|plan_migration|switch_now|verify_with_provider), replacement, shutdown_date, evidence, and freshness; pages are re-read every few hours. An unlisted id is verdict unknown, not an error; longer than 120 characters returns 400 bad_model_id. Example: {"model":"gpt-4-0613"}. Free within the daily quota, then ${PRICES.model} via x402. Alias: get_model (param id).`,
     inputSchema: { type: "object", properties: { model: { type: "string", minLength: 1, maxLength: 120, description: "Exact API model id, not a display name or provider id. 1–120 characters; lowercased, and a leading models/ is stripped. Examples: gpt-4-0613, claude-3-opus-20240229, gemini-1.5-pro.", examples: ["gpt-4-0613", "claude-3-opus-20240229"] }, id: { type: "string", minLength: 1, maxLength: 120, description: "Deprecated alias of model, only for the get_model tool name. Same 1–120 character API id. Ignored when model is also set." } } }, annotations: { title: "Is this model deprecated?", ...RO } },
   { name: "list_recent_api_changes", title: "What changed recently in AI/dev APIs?",
-    description: `List the on-demand feed of recent AI and developer API changes (status flips, deprecation-page edits, model retirements, pricing-page edits). Use for a chosen window, one provider, or one kind, when explaining sudden breakage. Not for live up/down (check_api_status) and not for the once-a-day digest, which also covers MCP server breakage (get_digest). Returns summary, count, freshness, and changes[] with provider, kind, title, detail, source, and at, newest first. Status rows arrive within about 4 minutes; doc-page rows every few hours. A limit above 500 is clamped to 500; an unknown provider returns an empty list, not an error. Example: {"provider":"anthropic","kind":"model_retirement"}. Free within the daily quota, then ${PRICES.changes} via x402. Alias: get_changes.`,
+    description: `List the on-demand feed of recent AI and developer API changes (status flips, deprecation-page edits, model retirements, pricing-page edits). Use for a chosen window, one provider, or one kind, when explaining sudden breakage. Not for live up/down (check_api_status) and not for the once-a-day digest, which also covers MCP server breakage (get_digest). Returns summary, count, freshness, and changes[] with provider, kind, title, detail, source, and at, newest first. Status rows arrive within about 5 minutes; doc-page rows every few hours. A limit above 500 is clamped to 500; an unknown provider returns an empty list, not an error. Example: {"provider":"anthropic","kind":"model_retirement"}. Free within the daily quota, then ${PRICES.changes} via x402. Alias: get_changes.`,
     inputSchema: { type: "object", properties: { since: { type: "string", description: "Exclusive lower bound compared to each change's at. ISO 8601 UTC. Example: 2026-10-01T00:00:00Z. Omit for 7 days ago.", examples: ["2026-10-01T00:00:00Z"] }, provider: { type: "string", description: "Optional lowercase provider id from list_providers, e.g. openai or anthropic. Omit for every provider.", examples: ["openai", "anthropic"] }, kind: { type: "string", enum: ["status", "deprecations", "model_retirement", "pricing"], description: "Optional type filter. status = provider state flips; deprecations = deprecation-page line edits; model_retirement = a model id became deprecated or retired; pricing = pricing-page line edits. Omit for all four.", examples: ["model_retirement"] }, limit: { type: "number", description: "How many changes to return, newest first. Positive integer. Omit for 100.", examples: [100] } } }, annotations: { title: "Recent API changes", ...RO } },
-  { name: "list_providers", title: "List tracked API providers", description: "List every AI and developer API provider Upstream tracks (~40) with id, name, category, current state, checked_at, and status page. Use to pick a provider id for check_api_status, or for one all-providers health pass. Not for one provider's incidents (check_api_status) and not for what changed (list_recent_api_changes or get_digest). No parameters. Always free; does not spend the daily quota. State is refreshed about every 4 minutes. Returns {count, providers:[{id, name, category, state, checked_at, status_page}]}; state is operational, degraded, partial_outage, major_outage, maintenance, or unknown.", inputSchema: { type: "object", properties: {} }, annotations: { title: "List providers", ...RO } },
+  { name: "list_providers", title: "List tracked API providers", description: "List every AI and developer API provider Upstream tracks (~40) with id, name, category, current state, checked_at, and status page. Use to pick a provider id for check_api_status, or for one all-providers health pass. Not for one provider's incidents (check_api_status) and not for what changed (list_recent_api_changes or get_digest). No parameters. Always free; does not spend the daily quota. State is refreshed about every 5 minutes. Returns {count, providers:[{id, name, category, state, checked_at, status_page}]}; state is operational, degraded, partial_outage, major_outage, maintenance, or unknown.", inputSchema: { type: "object", properties: {} }, annotations: { title: "List providers", ...RO } },
   { name: "get_digest", title: "Daily AI/dev API breaking-changes digest", description: "Read one published daily breaking-changes digest: AI/dev API status flips, model deprecations and retirements, pricing-page edits, and breaking MCP server changes. Use for a once-a-day catch-up. For a filtered on-demand API feed with no MCP section, use list_recent_api_changes; for live up/down, check_api_status; for one model id, check_model_deprecation. Always free (no quota, no x402). Published once at 12:00 UTC as a frozen window since the previous issue (usually ~24h); not updated later. Omit date for the latest; a missing YYYY-MM-DD returns 404 {error:no_issue}. One issue per date, no paging. Returns {date, title, summary, window_start, window_end, published_at, markdown, data, url, sponsor:null}. data holds counts, status, open_now, model_changes, shutting_down_30d, pricing, deprecation_page_edits, and mcp (breaking, non_breaking, down, back, auth_broken, auth_fixed). markdown caps model rows, breaking MCP rows, and each MCP event kind at 30, 30, and 20; data is the full window.", inputSchema: { type: "object", properties: { date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Published issue date, YYYY-MM-DD (example 2026-10-14). Omit for the latest issue. A date with no stored issue returns 404 no_issue; issues appear at 12:00 UTC.", examples: ["2026-10-14"] } } }, annotations: { title: "Daily digest", ...RO } },
 ];
 const ALIAS = { get_status: "check_api_status", get_model: "check_model_deprecation", get_changes: "list_recent_api_changes" };
@@ -291,8 +299,9 @@ async function mcp(c, env, ctx) {
 
 // ---------- app ----------
 async function listProviders(env) {
-  const rows = Object.fromEntries((await env.DB.prepare("SELECT * FROM status").all()).results.map((r) => [r.provider, r]));
-  return { code: 200, body: { count: PROVIDERS.length, providers: PROVIDERS.map((p) => { const r = rows[p.id]; return { id: p.id, name: p.name, category: p.category, state: r?.indicator || "unknown", checked_at: r?.checked_at || null, status_page: p.page }; }) } };
+  const [listed, clock] = await Promise.all([env.DB.prepare("SELECT * FROM status").all(), loadProbe(env)]);
+  const rows = Object.fromEntries(listed.results.map((r) => [r.provider, r]));
+  return { code: 200, body: { count: PROVIDERS.length, providers: PROVIDERS.map((p) => { const r = rows[p.id]; return { id: p.id, name: p.name, category: p.category, state: r?.indicator || "unknown", checked_at: r ? laterIso(r.checked_at, clock.probe.status) : null, status_page: p.page }; }) } };
 }
 const app = new Hono();
 app.use("*", cors({ origin: "*", exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE", "X-Free-Remaining", "X-Free-Plan"] }));
@@ -352,14 +361,25 @@ app.delete("/v1/watches/:id", async (c) => { const kr = await keyRow(c.env, c); 
 app.post("/admin/run", async (c) => {
   if (!c.env.ADMIN_TOKEN || c.req.header("authorization") !== "Bearer " + c.env.ADMIN_TOKEN) return c.json({ error: "forbidden" }, 403);
   const what = c.req.query("what");
-  if (what === "status") { for (let i = 0; i < 4; i++) await runStatusBatch(c.env, c.executionCtx, i); }
+  if (what === "status") {
+    const t = now(), clock = await loadProbe(c.env), status = await collectStatus(c.env, t);
+    clock.probe.status = t;
+    await batchAll(c.env, [...status.statements, probeStmt(c.env, clock.probe)]);
+    if (status.events.length) c.executionCtx.waitUntil(notify(c.env, status.events));
+  }
   else if (what === "catalog") await refreshCatalog(c.env);
   else if (what === "drain") return c.json(await drainOutbox(c.env));
   else if (what === "tw") return c.json(await twSnapshot(c.env));
   else if (what === "digest") { const d = await buildDigest(c.env, c.req.query("date") || today()); if (c.req.query("save") === "1") await saveDigest(c.env, d); return c.json(d); }
   else if (what === "tokens") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); return c.json((await pageTokens(r)).filter((t) => t.t !== "p" && t.t !== "li").slice(0, 400)); }
   else if (what === "parse") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); const m = await parseModels(await pageTokens(r), pg, today()); return c.json(Object.fromEntries(m)); }
-  else { const pg = PAGES.find((p) => p.id === what); if (!pg) return c.json({ error: "unknown" }, 400); await runPage(c.env, c.executionCtx, pg); }
+  else {
+    const pg = PAGES.find((p) => p.id === what); if (!pg) return c.json({ error: "unknown" }, 400);
+    const t = now(), clock = await loadProbe(c.env), page = await collectPage(c.env, pg, t);
+    clock.probe.pages[pg.id] = mergePageProbe(clock.probe.pages[pg.id], page.pageState);
+    await batchAll(c.env, [...page.statements, probeStmt(c.env, clock.probe)]);
+    if (page.events.length) c.executionCtx.waitUntil(notify(c.env, page.events));
+  }
   return c.json({ ok: true, what });
 });
 // ---- daily digest (always free) ----
@@ -393,8 +413,18 @@ app.get("/.well-known/mcp/server-card.json", (c) => c.json(CARD(new URL(c.req.ur
 app.get("/llms.txt", (c) => c.text(LLMS(new URL(c.req.url).origin, c.env)));
 app.get("/.well-known/x402", (c) => c.json({ version: 1, resources: ["/x402/status/{provider}", "/x402/changes", "/x402/model/{id}"].map((x) => new URL(c.req.url).origin + x) }));
 app.get("/openapi.json", (c) => c.json(openapi(new URL(c.req.url).origin, c.env)));
-app.get("/health", async (c) => { const r = await c.env.DB.prepare("SELECT MIN(checked_at) oldest, MAX(checked_at) newest, COUNT(*) n FROM status").first();
-  const pg = (await c.env.DB.prepare("SELECT id,checked_at,changed_at,error FROM pages").all()).results; const lc = await c.env.DB.prepare("SELECT v FROM meta WHERE k='last_cron'").first(); return c.json({ ok: true, version: VERSION, last_cron: lc?.v || null, network: c.env.X402_NETWORK, status_rows: r, pages: pg }); });
+app.get("/health", async (c) => {
+  const [r, pg, meta] = await Promise.all([
+    c.env.DB.prepare("SELECT MIN(checked_at) oldest, MAX(checked_at) newest, COUNT(*) n FROM status").first(),
+    c.env.DB.prepare("SELECT id,checked_at,changed_at,error FROM pages").all(),
+    c.env.DB.prepare("SELECT k,v FROM meta WHERE k IN ('probe_clock','last_cron')").all(),
+  ]);
+  const m = Object.fromEntries(meta.results.map((x) => [x.k, x.v]));
+  const probe = parseProbe(m.probe_clock);
+  if (probe.status && r?.n) { r.oldest = laterIso(r.oldest, probe.status); r.newest = laterIso(r.newest, probe.status); }
+  const pages = pg.results.map((p) => ({ ...p, checked_at: laterIso(p.checked_at, probe.pages[p.id]?.at) }));
+  return c.json({ ok: true, version: VERSION, last_cron: probe.status || m.last_cron || null, network: c.env.X402_NETWORK, status_rows: r, pages });
+});
 app.get("/", (c) => c.json({ name: "Upstream", what: "Is the AI/dev API your agent depends on up right now, and what's changing (deprecations, model retirements, pricing)?",
   free_tier: { with_free_key: `${c.env.FREE_KEY_DAILY} calls/day (POST /v1/keys)`, anonymous: `${c.env.FREE_ANON_DAILY} calls/day`, watches: "1 free change-alert webhook per key" },
   over_quota: { protocol: "x402 v2", network: c.env.X402_NETWORK, prices_usdc: PRICES }, docs: ["/llms.txt", "/openapi.json", SITE],
@@ -403,15 +433,26 @@ app.get("/", (c) => c.json({ name: "Upstream", what: "Is the AI/dev API your age
 export default {
   fetch: app.fetch,
   async scheduled(ev, env, ctx) {
-    await env.DB.prepare("INSERT INTO meta VALUES('last_cron',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(now()).run();
-    const m = Math.floor(ev.scheduledTime / 60000);
-    await runStatusBatch(env, ctx, m);
-    if (m % 5 === 2) await runPage(env, ctx, PAGES[Math.floor(m / 5) % PAGES.length]);
-    if (m % 360 === 7) await refreshCatalog(env);
-    if (m % 60 === 31) ctx.waitUntil(twSnapshot(env));
+    // Free plan: 50 external subrequests per invocation. One fetch per provider, plus a second
+    // for Google AI, plus one docs page = 42. All providers are checked every run so freshness
+    // stays on the 5-minute cron. Unchanged rows are not written; probe_clock is the one summary row.
+    const plan = cronPlan(ev.scheduledTime), t = now(), clock = await loadProbe(env);
+    const status = await collectStatus(env, t);
+    // The noon digest already walks the Toolweather snapshot. Skip the docs-page parse on that
+    // tick so this invocation stays inside the free-plan CPU budget. A page failure must not
+    // drop the status batch: that clock is what API freshness reads.
+    const pg = PAGES[plan.pageIndex];
+    let page = null;
+    if (!plan.digest) { try { page = await collectPage(env, pg, t); } catch { page = null; } }
+    clock.probe.status = t;
+    if (page) clock.probe.pages[pg.id] = mergePageProbe(clock.probe.pages[pg.id], page.pageState);
+    await batchAll(env, [...status.statements, ...(page?.statements || []), probeStmt(env, clock.probe)]);
+    const events = [...status.events, ...(page?.events || [])];
+    if (events.length) ctx.waitUntil(notify(env, events));
+    if (plan.catalog) await refreshCatalog(env);
+    if (plan.tw) ctx.waitUntil(twSnapshot(env));
     // 12:00 UTC (6:00 AM Mexico City): publish the issue for today's date, covering everything since the previous issue
-    const d = new Date(ev.scheduledTime);
-    if (d.getUTCHours() === 12 && d.getUTCMinutes() === 3) { await twSnapshot(env); const dg = await buildDigest(env, d.toISOString().slice(0, 10)); await saveDigest(env, dg); if (env.EMAIL_SENDING_ENABLED === "true") await enqueueDigest(env, dg); }
+    if (plan.digest) { await twSnapshot(env); const dg = await buildDigest(env, new Date(ev.scheduledTime).toISOString().slice(0, 10)); await saveDigest(env, dg); if (env.EMAIL_SENDING_ENABLED === "true") await enqueueDigest(env, dg); }
     if (mailReady(env)) ctx.waitUntil(drainOutbox(env));
   },
 };
