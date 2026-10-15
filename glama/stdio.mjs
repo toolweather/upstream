@@ -160,7 +160,8 @@ function getStatus(id) {
   const verdict = VERDICT[o.state] || o.state;
   const line = `Sample snapshot: ${p.name} is ${verdict}${o.summary ? " (" + o.summary + ")" : ""}${o.state_since ? " since " + o.state_since : ""}. ${act}`;
   const recent = CHANGES.filter((c) => c.provider === id).slice(0, 5).map(({ kind, title, at }) => ({ kind, title, at }));
-  return { code: 200, body: { summary: line, verdict, recommended_action: act, freshness: fr, ...o, summary: line, provider_description: o.summary, tracked_pages: PAGES[id] || [], recent_changes: recent } };
+  const { summary: provider_description, ...status } = o;
+  return { code: 200, body: { summary: line, verdict, recommended_action: act, freshness: fr, ...status, provider_description, tracked_pages: PAGES[id] || [], recent_changes: recent } };
 }
 
 function getChanges(q) {

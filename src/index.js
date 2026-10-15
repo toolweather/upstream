@@ -94,7 +94,8 @@ async function getStatus(env, id) {
   const act = { operational: "Safe to call.", maintenance: "Safe to call; scheduled maintenance in progress, expect brief errors.", degraded: "Call with retries and backoff; have a fallback provider ready.", partial_outage: "Expect failures; retry with backoff or route to a fallback provider.", major_outage: "Do not rely on it now; route to a fallback provider.", unknown: "Status unknown (our check failed, not necessarily the provider); proceed with retries." }[o.state] || "Proceed with care.";
   const verdict = { operational: "up", maintenance: "up", degraded: "degraded", partial_outage: "partially down", major_outage: "down", unknown: "unknown" }[o.state] || o.state;
   const line = `${p.name} is ${verdict}${o.summary ? " (" + o.summary + ")" : ""}${o.state_since ? " since " + o.state_since : ""}. ${act}`;
-  return { code: 200, body: { summary: line, verdict, recommended_action: act, freshness: fr, ...o, summary: line, provider_description: o.summary, tracked_pages: pages, recent_changes: recent } };
+  const { summary: provider_description, ...status } = o;
+  return { code: 200, body: { summary: line, verdict, recommended_action: act, freshness: fr, ...status, provider_description, tracked_pages: pages, recent_changes: recent } };
 }
 async function getChanges(env, q) {
   let sql = "SELECT * FROM changes WHERE at>?", a = [q.since || new Date(Date.now() - 7 * 864e5).toISOString()];
