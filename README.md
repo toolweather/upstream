@@ -1,5 +1,7 @@
 # Upstream
 
+[![Toolweather](https://toolweather.toolweather.workers.dev/badge/io.github.toolweather/upstream.svg)](https://toolweather.pages.dev/servers/io.github.toolweather--upstream/)
+
 Part of the **Toolweather suite**. The same tools are also available on the Toolweather MCP at `https://toolweather.toolweather.workers.dev/mcp` (proxied here). This Worker remains the source of truth for REST, digests and x402 payments.
 
 
