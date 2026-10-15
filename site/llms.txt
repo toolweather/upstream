@@ -10,6 +10,7 @@
 
 ## Over the free quota: x402 pay-per-call (USDC)
 Network: eip155:84532 (currently Base Sepolia testnet). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
+- Always-paid lane (no quota, same data): /x402/status/{provider}, /x402/changes, /x402/model/{id}
 - GET /status/:provider: $0.003
 - GET /changes: $0.01
 - GET /model/:id: $0.003
@@ -19,7 +20,7 @@ Network: eip155:84532 (currently Base Sepolia testnet). Unpaid calls over quota 
 - GET https://upstream.toolweather.workers.dev/providers (always free): list of providers and current state
 - GET https://upstream.toolweather.workers.dev/status/{provider}: state (operational | degraded | partial_outage | major_outage | maintenance | unknown), incidents, affected components, safe_to_call
 - GET https://upstream.toolweather.workers.dev/changes?since=ISO&provider=&kind=status|deprecations|model_retirement|pricing: change feed
-- GET https://upstream.toolweather.workers.dev/model/{id}: deprecated_or_retiring | listed_no_retirement_found | unknown, with dates and the source excerpt
+- GET https://upstream.toolweather.workers.dev/model/{id}: active | deprecated | retired | unknown, with shutdown date, replacement and the exact table row it came from
 - POST https://upstream.toolweather.workers.dev/v1/watches {"provider","url"}: signed webhooks (X-Upstream-Signature: sha256=HMAC(secret, body))
 - POST https://upstream.toolweather.workers.dev/mcp: MCP (streamable HTTP) with tools list_providers, get_status, get_changes, get_model. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
 - OpenAPI: https://upstream.toolweather.workers.dev/openapi.json

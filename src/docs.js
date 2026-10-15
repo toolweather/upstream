@@ -11,6 +11,7 @@ export const LLMS = (o, env) => `# Upstream
 
 ## Over the free quota: x402 pay-per-call (USDC)
 Network: ${env.X402_NETWORK} (currently Base Sepolia testnet). Unpaid calls over quota get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2); retry with PAYMENT-SIGNATURE.
+- Always-paid lane (no quota, same data): /x402/status/{provider}, /x402/changes, /x402/model/{id}
 - GET /status/:provider: $0.003
 - GET /changes: $0.01
 - GET /model/:id: $0.003
@@ -20,7 +21,7 @@ Network: ${env.X402_NETWORK} (currently Base Sepolia testnet). Unpaid calls over
 - GET ${o}/providers (always free): list of providers and current state
 - GET ${o}/status/{provider}: state (operational | degraded | partial_outage | major_outage | maintenance | unknown), incidents, affected components, safe_to_call
 - GET ${o}/changes?since=ISO&provider=&kind=status|deprecations|model_retirement|pricing: change feed
-- GET ${o}/model/{id}: deprecated_or_retiring | listed_no_retirement_found | unknown, with dates and the source excerpt
+- GET ${o}/model/{id}: active | deprecated | retired | unknown, with shutdown date, replacement and the exact table row it came from
 - POST ${o}/v1/watches {"provider","url"}: signed webhooks (X-Upstream-Signature: sha256=HMAC(secret, body))
 - POST ${o}/mcp: MCP (streamable HTTP) with tools list_providers, get_status, get_changes, get_model. Over quota, a tool returns the x402 requirement; retry with params._meta["x402/payment"].
 - OpenAPI: ${o}/openapi.json
@@ -30,18 +31,28 @@ Network: ${env.X402_NETWORK} (currently Base Sepolia testnet). Unpaid calls over
 - Responses include a "sponsored" field, reserved and always null for now. No ads.
 `;
 export const openapi = (o, env) => {
-  const pay = { "402": { description: "Free quota used up: x402 v2 payment required (see PAYMENT-REQUIRED header)" } };
-  const ok = { "200": { description: "OK" } };
-  const sec = [{ apiKey: [] }, {}];
-  return { openapi: "3.1.0", info: { title: "Upstream", version: "0.1.0", description: `Live status and breaking-change feed for AI/dev APIs. Free: ${env.FREE_KEY_DAILY} calls/day per key, ${env.FREE_ANON_DAILY}/day anonymous. Over quota: x402 on ${env.X402_NETWORK}.` },
-    servers: [{ url: o }], components: { securitySchemes: { apiKey: { type: "apiKey", in: "header", name: "X-API-Key" } } },
+  const pay = { "402": { description: "Payment Required (x402 v2, see PAYMENT-REQUIRED header)" } };
+  const ok = { "200": { description: "OK", content: { "application/json": { schema: { type: "object" } } } } };
+  const xpi = (amount) => ({ price: { mode: "fixed", currency: "USD", amount }, protocols: [{ x402: {} }] });
+  const free = [{ apiKey: [] }, {}];
+  const P = (n, d) => ({ name: n, in: "path", required: true, description: d, schema: { type: "string" } });
+  const Q = ["since", "provider", "kind", "limit"].map((n) => ({ name: n, in: "query", required: false, schema: { type: "string" } }));
+  const ops = (pre, paid) => ({
+    [pre + "/status/{provider}"]: { get: { operationId: (paid ? "paid_" : "") + "getStatus", summary: "Status - is this AI/dev API provider up right now (incidents, affected components)", tags: ["Status"], parameters: [P("provider", "provider id from GET /providers, e.g. openai, anthropic, github, stripe")], ...(paid ? { "x-payment-info": xpi("0.003000") } : { security: free, "x-price-over-free-tier": xpi("0.003000") }), responses: { ...ok, ...pay } } },
+    [pre + "/changes"]: { get: { operationId: (paid ? "paid_" : "") + "getChanges", summary: "Changes - feed of outages, deprecations, model retirements and pricing-page edits", tags: ["Changes"], parameters: Q, ...(paid ? { "x-payment-info": xpi("0.010000") } : { security: free, "x-price-over-free-tier": xpi("0.010000") }), responses: { ...ok, ...pay } } },
+    [pre + "/model/{id}"]: { get: { operationId: (paid ? "paid_" : "") + "getModel", summary: "Model - is this model active, deprecated or retired; shutdown date and replacement", tags: ["Models"], parameters: [P("id", "model id, e.g. gpt-4o-2024-08-06, claude-3-opus-20240229, gemini-2.0-flash")], ...(paid ? { "x-payment-info": xpi("0.003000") } : { security: free, "x-price-over-free-tier": xpi("0.003000") }), responses: { ...ok, ...pay } } },
+  });
+  return { openapi: "3.1.0",
+    info: { title: "Upstream", version: "0.1.0", contact: { email: "toolweather.app@proton.me" },
+      description: `Live status and breaking-change feed for ~40 AI and developer APIs. Free tier: ${env.FREE_KEY_DAILY} calls/day per free key (POST /v1/keys), ${env.FREE_ANON_DAILY}/day anonymous, 1 free webhook watch. Over the free tier: x402 pay-per-call on ${env.X402_NETWORK}.`,
+      "x-guidance": "Before calling an AI or developer API (OpenAI, Anthropic, Gemini, GitHub, Stripe...), GET /status/{provider} to see if it is up; GET /model/{id} to check if a model is deprecated or retired and its replacement; GET /changes?since=ISO for what changed. The /x402/* paths are the same data and always paid per call; the plain paths are free within the daily quota and switch to x402 when it is used up." },
+    servers: [{ url: o }],
+    components: { securitySchemes: { apiKey: { type: "apiKey", in: "header", name: "X-API-Key" } } },
     paths: {
-      "/providers": { get: { summary: "List tracked providers (free)", responses: ok } },
-      "/status/{provider}": { get: { summary: "Current status of one provider", "x-price-usd": 0.003, security: sec, parameters: [{ name: "provider", in: "path", required: true, schema: { type: "string" } }], responses: { ...ok, ...pay } } },
-      "/changes": { get: { summary: "Change feed", "x-price-usd": 0.01, security: sec, parameters: ["since", "provider", "kind", "limit"].map((n) => ({ name: n, in: "query", schema: { type: "string" } })), responses: { ...ok, ...pay } } },
-      "/model/{id}": { get: { summary: "Model deprecation/retirement lookup", "x-price-usd": 0.003, security: sec, parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: { ...ok, ...pay } } },
-      "/v1/keys": { post: { summary: "Get a free API key instantly", responses: { "201": { description: "key" } } } },
-      "/v1/watches": { post: { summary: "Create change-alert webhook (1 free per key, extra $0.05 / 30 days)", security: [{ apiKey: [] }], requestBody: { content: { "application/json": { schema: { type: "object", properties: { provider: { type: "string" }, url: { type: "string" } }, required: ["provider", "url"] } } } }, responses: { "201": { description: "created" }, ...pay } }, get: { summary: "List your watches", security: [{ apiKey: [] }], responses: ok } },
-      "/mcp": { post: { summary: "MCP endpoint (JSON-RPC)", responses: ok } },
+      "/providers": { get: { operationId: "listProviders", summary: "List tracked providers and current state (free)", security: [], responses: ok } },
+      ...ops("", false), ...ops("/x402", true),
+      "/v1/keys": { post: { operationId: "createKey", summary: "Get a free API key instantly", security: [], responses: { "201": { description: "key" } } } },
+      "/v1/watches": { post: { operationId: "createWatch", summary: "Create change-alert webhook (1 free per key, each extra $0.05 / 30 days)", security: [{ apiKey: [] }], "x-price-over-free-tier": xpi("0.050000"), requestBody: { content: { "application/json": { schema: { type: "object", properties: { provider: { type: "string" }, url: { type: "string" } }, required: ["provider", "url"] } } } }, responses: { "201": { description: "created" }, ...pay } }, get: { operationId: "listWatches", summary: "List your watches", security: [{ apiKey: [] }], responses: ok } },
+      "/mcp": { post: { operationId: "mcp", summary: "MCP endpoint (JSON-RPC, streamable HTTP)", security: [], responses: ok } },
     } };
 };

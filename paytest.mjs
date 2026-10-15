@@ -1,0 +1,24 @@
+// E2E paid call on Base Sepolia TESTNET using the payer key in /workspace/.secrets/upstream_testnet_payer_key
+import { readFileSync } from "node:fs";
+import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { privateKeyToAccount } from "viem/accounts";
+import { createPublicClient, http, erc20Abi, formatUnits } from "viem";
+import { baseSepolia } from "viem/chains";
+const pk = readFileSync("/workspace/.secrets/upstream_testnet_payer_key", "utf8").match(/PRIVATE_KEY=(0x[0-9a-f]+)/i)[1];
+const acct = privateKeyToAccount(pk);
+const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const pc = createPublicClient({ chain: baseSepolia, transport: http() });
+const bal = async (a) => formatUnits(await pc.readContract({ address: USDC, abi: erc20Abi, functionName: "balanceOf", args: [a] }), 6);
+const U = process.env.U || "https://upstream.toolweather.workers.dev";
+const PAYTO = "0xf56910A23FB762e6DF81e6f720C43eDc951aA3e3";
+console.log("payer", acct.address, "USDC", await bal(acct.address), "| payTo USDC", await bal(PAYTO));
+if (process.argv[2] === "balance") process.exit(0);
+const client = new x402Client().register("eip155:84532", new ExactEvmScheme(acct));
+const f = wrapFetchWithPayment(fetch, client);
+const path = process.argv[2] || "/status/openai";
+const r = await f(U + path, { headers: process.env.K ? { "x-api-key": process.env.K } : {} });
+console.log("REST", path, "->", r.status, "free-remaining", r.headers.get("x-free-remaining"));
+const pr = r.headers.get("payment-response"); if (pr) console.log("PAYMENT-RESPONSE", Buffer.from(pr, "base64").toString());
+console.log((await r.text()).slice(0, 200));
+console.log("after: payer USDC", await bal(acct.address), "| payTo USDC", await bal(PAYTO));

@@ -47,7 +47,7 @@ export const PAGES = [
   { id: "openai-deprecations", provider: "openai", url: "https://developers.openai.com/api/docs/deprecations" },
   { id: "anthropic-deprecations", provider: "anthropic", url: "https://platform.claude.com/docs/en/about-claude/model-deprecations" },
   { id: "google-ai-deprecations", provider: "google-ai", url: "https://ai.google.dev/gemini-api/docs/deprecations" },
-  { id: "mistral-models", provider: "mistral", url: "https://docs.mistral.ai/models" },
+  { id: "mistral-models", provider: "mistral", url: "https://docs.mistral.ai/models", kind: "deprecations" },
   { id: "groq-deprecations", provider: "groq", url: "https://console.groq.com/docs/deprecations" },
   { id: "cohere-deprecations", provider: "cohere", url: "https://docs.cohere.com/docs/deprecations" },
 ];

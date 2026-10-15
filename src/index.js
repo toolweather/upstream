@@ -4,6 +4,7 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { PROVIDERS, PAGES } from "./providers.js";
+import { pageTokens, parseModels } from "./models.js";
 import { LLMS, openapi, SITE } from "./docs.js";
 
 const VERSION = "0.1.0";
@@ -27,6 +28,9 @@ function x402(env) {
     "GET /status/:provider": { accepts: [opt(PRICES.status)], description: "Upstream: live status of one AI/dev API provider (free quota exhausted)", mimeType: "application/json" },
     "GET /changes": { accepts: [opt(PRICES.changes)], description: "Upstream: normalized change feed (status, deprecations, model retirements, pricing)", mimeType: "application/json" },
     "GET /model/:id": { accepts: [opt(PRICES.model)], description: "Upstream: is this model live, deprecated or retiring", mimeType: "application/json" },
+    "GET /x402/status/:provider": { accepts: [opt(PRICES.status)], description: "Upstream: live status (incidents, affected components) of one AI/dev API provider", mimeType: "application/json" },
+    "GET /x402/changes": { accepts: [opt(PRICES.changes)], description: "Upstream: change feed of status changes, deprecations, model retirements and pricing-page edits", mimeType: "application/json" },
+    "GET /x402/model/:id": { accepts: [opt(PRICES.model)], description: "Upstream: is this model active, deprecated or retired, shutdown date and replacement", mimeType: "application/json" },
     "POST /v1/watches": { accepts: [opt(PRICES.watch)], description: "Upstream: one extra change-alert webhook watch for 30 days", mimeType: "application/json" },
   };
   X = { server, opt, mw: paymentMiddleware(routes, server, undefined, undefined, true), ready: null };
@@ -81,19 +85,20 @@ const norm = (s) => String(s).toLowerCase().replace(/^models\//, "").trim();
 async function getModel(env, id) {
   const m = norm(id);
   if (!m || m.length > 120) return { code: 400, body: { error: "bad_model_id" } };
-  const exact = (await env.DB.prepare("SELECT * FROM models WHERE model=?").bind(m).all()).results;
-  const near = exact.length ? [] : (await env.DB.prepare("SELECT * FROM models WHERE model LIKE ? LIMIT 10").bind(m + "%").all()).results;
-  const rows = exact.length ? exact : near;
-  const dep = rows.filter((r) => r.status === "deprecated");
-  let catalog = null;
-  try { const cat = JSON.parse((await env.DB.prepare("SELECT v FROM meta WHERE k='openrouter_models'").first())?.v || "[]"); catalog = cat.filter((x) => x === m || x.endsWith("/" + m)).slice(0, 5); } catch {}
-  const status = dep.length ? "deprecated_or_retiring" : rows.length || catalog?.length ? "listed_no_retirement_found" : "unknown";
-  return { code: 200, body: { model: m, status, matched: exact.length ? "exact" : near.length ? "prefix" : "none",
-    retirement: dep.map((r) => ({ provider: r.provider, dates_mentioned: JSON.parse(r.dates || "[]"), excerpt: r.snippet, source: r.source, seen_at: r.seen_at })),
-    listed_on: [...new Set(rows.map((r) => r.provider))], openrouter_ids: catalog,
-    note: "Dates are taken from the provider's own deprecation page; check 'excerpt' for which date is the shutdown. 'unknown' means we found no mention, not that the model is safe.", sponsored: null } };
+  const rows = (await env.DB.prepare("SELECT * FROM models WHERE model=?").bind(m).all()).results;
+  const sugg = rows.length ? [] : (await env.DB.prepare("SELECT model,provider,status FROM models WHERE model LIKE ? LIMIT 8").bind("%" + m.replace(/[%_]/g, "") + "%").all()).results;
+  let orIds = null;
+  try { const cat = JSON.parse((await env.DB.prepare("SELECT v FROM meta WHERE k='openrouter_models'").first())?.v || "[]"); orIds = cat.filter((x) => x === m || x.endsWith("/" + m)).slice(0, 5); } catch {}
+  const order = { retired: 3, deprecated: 2, active: 1 };
+  const best = rows.sort((a, b) => (order[b.status] || 0) - (order[a.status] || 0))[0];
+  const info = best ? JSON.parse(best.dates || "{}") : {};
+  return { code: 200, body: { model: m, status: best ? best.status : "unknown",
+    shutdown_date: info.shutdown_date || null, deprecated_on: info.deprecated_on || null, replacement: info.replacement || null,
+    evidence: rows.map((r) => ({ provider: r.provider, status: r.status, ...JSON.parse(r.dates || "{}"), row: r.snippet, source: r.source, seen_at: r.seen_at })),
+    did_you_mean: sugg.length ? sugg : undefined, on_openrouter: orIds?.length ? orIds : undefined,
+    states: "active = the provider's page explicitly lists it as active or with no shutdown date; deprecated = explicitly deprecated, shutdown in the future; retired = shutdown date has passed; unknown = not explicitly listed on any tracked deprecation page (not a guarantee it is live).",
+    sponsored: null } };
 }
-
 // ---------- scheduled collection ----------
 async function fetchT(url, ms = 8000, init = {}) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
@@ -153,47 +158,14 @@ async function pageText(resp) {
   return parts.join("").replace(/&nbsp;|&#160;/g, " ").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").replace(/[ \t]+/g, " ")
     .split("\n").map((l) => l.trim().replace(/^\| ?/, "")).filter((l) => l.length > 2 && l.length < 1500).join("\n");
 }
-const MODEL_RE = /\b((?:gpt|chatgpt|o1|o3|o4|text-embedding|text-moderation|omni-moderation|dall-e|whisper|tts|babbage|davinci|codex|claude|gemini|gemma|imagen|veo|text-bison|chat-bison|textembedding|embedding-0|mistral|mixtral|codestral|pixtral|ministral|magistral|devstral|voxtral|open-mistral|open-mixtral|llama|meta-llama|qwen|deepseek|command|embed-english|embed-multilingual|rerank|c4ai-aya|aya|distil-whisper|moonshotai|kimi|compound|allam|playai)[a-z0-9._:/-]*[a-z0-9])/gi;
-const US_DATE_RE = /(\d{1,2}\/\d{1,2}\/20\d\d)/g;
-const DATE_RE = /\b(20\d\d-\d\d-\d\d|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2},? 20\d\d|\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* 20\d\d)\b/g;
-function extractModels(text, pg) {
-  const out = new Map(); let header = "";
-  // merge "grid" layouts where each cell is its own line (model / release date / shutdown date / replacement)
-  const L = text.split("\n"), rows = [];
-  const isDateish = (l) => /^((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2},? 20\d\d|20\d\d-\d\d-\d\d|No (shutdown|retirement) date announced|N\/A)$/i.test(l);
-  for (let i = 0; i < L.length; i++) {
-    if (/^[a-z0-9][a-z0-9.\-/:]*$/i.test(L[i]) && isDateish(L[i + 1] || "")) {
-      let j = i + 1, row = L[i]; while (j < L.length && j <= i + 2 && isDateish(L[j])) row += " | " + L[j++];
-      if (L[j] && !isDateish(L[j + 1] || "") && L[j].length < 200 && MODEL_RE.test(L[j])) row += " | " + L[j++];
-      MODEL_RE.lastIndex = 0; rows.push(row); i = j - 1;
-    } else rows.push(L[i]);
-  }
-  for (const line of rows) {
-    const raw = [...line.matchAll(MODEL_RE)].map((m) => m[1]);
-    const ms = raw.map(norm).filter((m) => /\d|-/.test(m) && m.length >= 5 && m.length <= 80 && !/^command-line|^embedding-0$/.test(m));
-    if (!ms.length) { if (/\|/.test(line) && /date|shutdown|retire|deprecat|replacement/i.test(line)) header = line.slice(0, 200); continue; }
-    let rest = line; for (const r of raw) rest = rest.split(r).join(" ");
-    const dates = [...new Set([...rest.matchAll(DATE_RE), ...rest.matchAll(US_DATE_RE)].map((m) => m[1]))];
-    const depWord = /deprecat|retir|shut ?down|sunset|legacy|discontinu|no longer/i.test(rest);
-    const noDate = /no (shutdown|retirement|deprecation) date|not deprecated|not shutting down/i.test(rest);
-    const need = /release/i.test(header) ? 2 : 1;
-    const dep = !noDate && (pg.kind === "deprecations" && pg.provider !== "mistral" ? (dates.length >= need || (depWord && !/release/i.test(header))) : dates.length > 0 && (depWord || /deprecat|retir/i.test(header)));
-    // in table rows only the first cell holding a model id is the subject; later cells are replacements
-    let subj = new Set(ms);
-    if (line.includes("|")) { for (const cell of line.split("|")) { const cm = [...cell.matchAll(MODEL_RE)].map((m) => norm(m[1])).filter((m) => ms.includes(m)); if (cm.length) { subj = new Set(cm); break; } } }
-    for (const m of ms.slice(0, 12)) {
-      const prev = out.get(m), d = dep && subj.has(m);
-      if (!prev || (d && prev.status !== "deprecated")) out.set(m, { status: d ? "deprecated" : "listed", dates: d ? dates : [], snippet: ((header ? header + " || " : "") + line).slice(0, 500) });
-    }
-  }
-  return out;
-}
 async function runPage(env, ctx, pg) {
   const t = now();
   try {
     const r = await fetchT(pg.url, 15000, { headers: { accept: "text/html" } });
     if (!r.ok) throw new Error("HTTP " + r.status);
-    const text = await pageText(r), h = await sha(text);
+    const isModels = pg.kind === "deprecations";
+    const [text, models] = await Promise.all([pageText(isModels ? r.clone() : r), isModels ? pageTokens(r).then((tk) => parseModels(tk, pg, today())) : null]);
+    const h = await sha(text);
     const old = await env.DB.prepare("SELECT hash,text FROM pages WHERE id=?").bind(pg.id).first();
     const st = [env.DB.prepare("INSERT INTO pages VALUES(?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,text=excluded.text,checked_at=excluded.checked_at,changed_at=CASE WHEN pages.hash=excluded.hash THEN pages.changed_at ELSE excluded.changed_at END,error=NULL")
       .bind(pg.id, pg.provider, pg.url, h, text.slice(0, 900000), t, t)];
@@ -203,13 +175,14 @@ async function runPage(env, ctx, pg) {
       const added = [...b].filter((l) => !a.has(l)), removed = [...a].filter((l) => !b.has(l));
       if (added.length || removed.length) events.push({ provider: pg.provider, kind: pg.kind, title: `${PBY[pg.provider].name} ${pg.kind} page changed (+${added.length} / -${removed.length} lines)`, detail: { added: added.slice(0, 40), removed: removed.slice(0, 40) }, source: pg.url, at: t });
     }
-    if (pg.kind === "deprecations" || pg.id === "mistral-models") {
-      const models = extractModels(text, pg);
-      const prevDep = new Set((await env.DB.prepare("SELECT model FROM models WHERE provider=? AND status='deprecated'").bind(pg.provider).all()).results.map((r) => r.model));
+    if (models) {
+      const prev = Object.fromEntries((await env.DB.prepare("SELECT model,status FROM models WHERE provider=? AND source=?").bind(pg.provider, pg.url).all()).results.map((r) => [r.model, r.status]));
+      const hadPrev = Object.keys(prev).length > 0;
       for (const [m, v] of models) {
-        st.push(env.DB.prepare("INSERT INTO models VALUES(?,?,?,?,?,?,?) ON CONFLICT(model,provider) DO UPDATE SET status=CASE WHEN models.source=excluded.source OR models.status!='deprecated' THEN excluded.status ELSE models.status END,dates=CASE WHEN excluded.status='deprecated' OR models.status!='deprecated' THEN excluded.dates ELSE models.dates END,snippet=CASE WHEN excluded.status='deprecated' OR models.status!='deprecated' THEN excluded.snippet ELSE models.snippet END,seen_at=excluded.seen_at")
-          .bind(m, pg.provider, v.status, JSON.stringify(v.dates), v.snippet, pg.url, t));
-        if (old && prevDep.size && v.status === "deprecated" && !prevDep.has(m)) events.push({ provider: pg.provider, kind: "model_retirement", title: `${m} (${pg.provider}) now listed as deprecated/retiring${v.dates.length ? " — " + v.dates.join(", ") : ""}`, detail: { model: m, dates: v.dates, excerpt: v.snippet }, source: pg.url, at: t });
+        const info = { shutdown_date: v.shutdown_date || null, deprecated_on: v.deprecated_on || null, replacement: v.replacement || null, section: v.section || null, note: v.note || v.tentative_retirement || null };
+        st.push(env.DB.prepare("INSERT INTO models VALUES(?,?,?,?,?,?,?) ON CONFLICT(model,provider) DO UPDATE SET status=excluded.status,dates=excluded.dates,snippet=excluded.snippet,source=excluded.source,seen_at=excluded.seen_at")
+          .bind(m, pg.provider, v.status, JSON.stringify(info), v.evidence, pg.url, t));
+        if (hadPrev && prev[m] !== v.status && v.status !== "active") events.push({ provider: pg.provider, kind: "model_retirement", title: `${m} (${PBY[pg.provider].name}): ${prev[m] || "new"} → ${v.status}${info.shutdown_date ? ", shutdown " + info.shutdown_date : ""}`, detail: { model: m, from: prev[m] || null, to: v.status, ...info, evidence: v.evidence }, source: pg.url, at: t });
       }
     }
     for (const e of events.slice(0, 50)) st.push(env.DB.prepare("INSERT INTO changes(provider,kind,title,detail,source,at) VALUES(?,?,?,?,?,?)").bind(e.provider, e.kind, e.title, JSON.stringify(e.detail), e.source, e.at));
@@ -242,7 +215,7 @@ const TOOLS = [
   { name: "list_providers", description: "List the ~40 AI and developer API providers Upstream tracks, with their current state. Free.", inputSchema: { type: "object", properties: {} } },
   { name: "get_status", description: `Is this provider's API up right now? Current state, open incidents, affected components. Free within the daily quota, then ${PRICES.status} via x402.`, inputSchema: { type: "object", properties: { provider: { type: "string", description: "provider id from list_providers, e.g. openai, anthropic, github, stripe" } }, required: ["provider"] } },
   { name: "get_changes", description: `What changed: status transitions, deprecation-page edits, model retirements, pricing-page edits. Free within the daily quota, then ${PRICES.changes} via x402.`, inputSchema: { type: "object", properties: { since: { type: "string", description: "ISO timestamp, default 7 days ago" }, provider: { type: "string" }, kind: { type: "string", enum: ["status", "deprecations", "model_retirement", "pricing"] }, limit: { type: "number" } } } },
-  { name: "get_model", description: `Is this model id live, deprecated or retiring, and when? Free within the daily quota, then ${PRICES.model} via x402.`, inputSchema: { type: "object", properties: { id: { type: "string", description: "model id, e.g. gpt-4o, claude-3-opus-20240229, gemini-1.5-pro" } }, required: ["id"] } },
+  { name: "get_model", description: `Is this model id active, deprecated or retired? Shutdown date and replacement, from the provider's own deprecation page ("unknown" if not explicitly listed). Free within the daily quota, then ${PRICES.model} via x402.`, inputSchema: { type: "object", properties: { id: { type: "string", description: "model id, e.g. gpt-4o, claude-3-opus-20240229, gemini-1.5-pro" } }, required: ["id"] } },
 ];
 async function mcp(c, env, ctx) {
   let msg; try { msg = await c.req.json(); } catch { return c.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }, 400); }
@@ -274,7 +247,9 @@ async function mcp(c, env, ctx) {
   const v = match && (await x.server.verifyPayment(payload, match));
   if (!v?.isValid) return ok({ content: [{ type: "text", text: "payment invalid: " + (v?.invalidReason || "no matching requirement") }], isError: true });
   const r = await run();
-  const s = await x.server.settlePayment(payload, match);
+  if (r.code >= 400) return res(r); // don't charge for errors
+  const s = await x.server.settlePayment(payload, match).catch((e) => ({ success: false, errorReason: String(e).slice(0, 200) }));
+  if (!s?.success) return ok({ content: [{ type: "text", text: "payment settlement failed, you were not charged: " + (s?.errorReason || "unknown") }], isError: true, _meta: { "x402/payment-response": { success: false, errorReason: s?.errorReason } } });
   return res(r, { _meta: { "x402/payment-response": s } });
 }
 
@@ -299,6 +274,11 @@ const gate = async (c, next) => {
 app.get("/status/:provider", gate, async (c) => { const r = await getStatus(c.env, c.req.param("provider")); return c.json(r.body, r.code); });
 app.get("/changes", gate, async (c) => { const r = await getChanges(c.env, c.req.query()); return c.json(r.body, r.code); });
 app.get("/model/:id{.+}", gate, async (c) => { const r = await getModel(c.env, c.req.param("id")); return c.json(r.body, r.code); });
+// always-paid lane (no free quota), for x402 directories and agents that prefer to just pay
+const payOnly = (c, next) => x402(c.env).mw(c, next);
+app.get("/x402/status/:provider", payOnly, async (c) => { const r = await getStatus(c.env, c.req.param("provider")); return c.json(r.body, r.code); });
+app.get("/x402/changes", payOnly, async (c) => { const r = await getChanges(c.env, c.req.query()); return c.json(r.body, r.code); });
+app.get("/x402/model/:id{.+}", payOnly, async (c) => { const r = await getModel(c.env, c.req.param("id")); return c.json(r.body, r.code); });
 app.get("/providers", async (c) => { const r = await listProviders(c.env); return c.json(r.body, 200, { "cache-control": "max-age=60" }); });
 
 app.post("/v1/keys", async (c) => {
@@ -338,6 +318,8 @@ app.post("/admin/run", async (c) => {
   const what = c.req.query("what");
   if (what === "status") { for (let i = 0; i < 4; i++) await runStatusBatch(c.env, c.executionCtx, i); }
   else if (what === "catalog") await refreshCatalog(c.env);
+  else if (what === "tokens") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); return c.json((await pageTokens(r)).filter((t) => t.t !== "p" && t.t !== "li").slice(0, 400)); }
+  else if (what === "parse") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); const m = await parseModels(await pageTokens(r), pg, today()); return c.json(Object.fromEntries(m)); }
   else { const pg = PAGES.find((p) => p.id === what); if (!pg) return c.json({ error: "unknown" }, 400); await runPage(c.env, c.executionCtx, pg); }
   return c.json({ ok: true, what });
 });
@@ -345,6 +327,7 @@ app.post("/mcp", (c) => mcp(c, c.env, c.executionCtx));
 app.get("/mcp", (c) => c.json({ error: "Use POST (streamable HTTP, JSON responses)" }, 405));
 app.get("/.well-known/mcp", (c) => c.json({ name: "upstream", version: VERSION, transport: "streamable-http", url: new URL(c.req.url).origin + "/mcp", tools: TOOLS.map((t) => t.name) }));
 app.get("/llms.txt", (c) => c.text(LLMS(new URL(c.req.url).origin, c.env)));
+app.get("/.well-known/x402", (c) => c.json({ version: 1, resources: ["/x402/status/{provider}", "/x402/changes", "/x402/model/{id}"].map((x) => new URL(c.req.url).origin + x) }));
 app.get("/openapi.json", (c) => c.json(openapi(new URL(c.req.url).origin, c.env)));
 app.get("/health", async (c) => { const r = await c.env.DB.prepare("SELECT MIN(checked_at) oldest, MAX(checked_at) newest, COUNT(*) n FROM status").first();
   const pg = (await c.env.DB.prepare("SELECT id,checked_at,changed_at,error FROM pages").all()).results; const lc = await c.env.DB.prepare("SELECT v FROM meta WHERE k='last_cron'").first(); return c.json({ ok: true, version: VERSION, last_cron: lc?.v || null, network: c.env.X402_NETWORK, status_rows: r, pages: pg }); });

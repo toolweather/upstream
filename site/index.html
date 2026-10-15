@@ -34,9 +34,10 @@ table{border-collapse:collapse;width:100%;font-size:15px}td,th{border-bottom:1px
 <table><tr><th>Endpoint</th><th>What it answers</th><th>Over the free tier</th></tr>
 <tr><td><code>GET /providers</code></td><td>Which providers we track and their state</td><td>Always free</td></tr>
 <tr><td><code>GET /status/:provider</code></td><td>Up right now? Incidents and affected parts</td><td>$0.003</td></tr>
-<tr><td><code>GET /model/:id</code></td><td>Is this model deprecated or retiring, and when?</td><td>$0.003</td></tr>
+<tr><td><code>GET /model/:id</code></td><td>Active, deprecated or retired? Shutdown date and replacement</td><td>$0.003</td></tr>
 <tr><td><code>GET /changes?since=</code></td><td>Outages, deprecations, retirements, pricing edits</td><td>$0.01</td></tr>
 <tr><td><code>POST /v1/watches</code></td><td>Extra change-alert webhook (30 days)</td><td>$0.05</td></tr></table>
+<p class="mut">Prefer to just pay? The same data is at <code>/x402/status/:provider</code>, <code>/x402/model/:id</code> and <code>/x402/changes</code>, always pay-per-call with no key.</p>
 <p class="note">Preview: payments currently run on the Base Sepolia <b>testnet</b>, so no real money moves yet.</p>
 
 <h2>Right now</h2>
