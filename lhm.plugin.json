@@ -1,0 +1,155 @@
+{
+  "identifier": "toolweather-upstream",
+  "name": "Upstream",
+  "version": "0.2.0",
+  "description": "Is this AI/dev API down? Is this model deprecated, what replaces it? Live status for ~40 APIs.",
+  "author": "toolweather",
+  "authorUrl": "https://github.com/toolweather",
+  "category": "developer",
+  "tags": [
+    "api",
+    "status",
+    "monitoring",
+    "agents"
+  ],
+  "homepage": "https://github.com/toolweather/upstream",
+  "cloudEndpoint": "https://upstream.toolweather.workers.dev/mcp",
+  "tools": [
+    {
+      "name": "check_api_status",
+      "title": "Is this API / provider down right now?",
+      "description": "Check if an AI or developer API provider (OpenAI, Anthropic, Gemini, Mistral, Groq, GitHub, Stripe, Cloudflare, Vercel, Supabase, Twilio... ~40 total) is up, degraded or down right now. Use BEFORE calling a provider's API, or right after you get 5xx/429/timeout errors, to decide whether to retry, wait or switch to a fallback. Returns a one-line summary first, then verdict, recommended_action, open incidents, affected components, checked_at and freshness (checked every ~4 min). Example: {\"provider\":\"openai\"}. Free within the daily quota, then $0.003 via x402. Alias: get_status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Provider id (lowercase). Examples: openai, anthropic, google-ai, mistral, groq, github, stripe, cloudflare. Full list: list_providers.",
+            "examples": [
+              "openai",
+              "anthropic",
+              "github"
+            ]
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "annotations": {
+        "title": "Is this API down?",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "check_model_deprecation",
+      "title": "Is this model deprecated, and what replaces it?",
+      "description": "Check if an LLM model id is active, deprecated or retired, its shutdown date, and the recommended replacement, from the provider's own deprecation page (OpenAI, Anthropic, Google, etc.). Use before hard-coding or calling a model, or when a model call fails with \"model not found / deprecated\". Returns summary first, then verdict, recommended_action (keep_using | plan_migration | switch_now | verify_with_provider), replacement, shutdown_date, evidence rows and freshness. Example: {\"model\":\"gpt-4-0613\"}. Free within the daily quota, then $0.003 via x402. Alias: get_model (param \"id\").",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model id as used in the API call. Examples: gpt-4o, claude-3-opus-20240229, gemini-1.5-pro.",
+            "examples": [
+              "gpt-4-0613",
+              "claude-3-opus-20240229"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Deprecated alias of model."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Is this model deprecated?",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_recent_api_changes",
+      "title": "What changed recently in AI/dev APIs?",
+      "description": "List recent breaking or notable changes across AI and developer APIs: outages and recoveries, deprecation-page edits, model retirements and pricing-page edits. Use to answer \"did anything change that could break my integration?\" or to explain sudden errors. Returns summary first, then the change list with timestamps and source links. Example: {\"provider\":\"anthropic\",\"kind\":\"model_retirement\"}. Free within the daily quota, then $0.01 via x402. Alias: get_changes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "string",
+            "description": "ISO 8601 timestamp; default 7 days ago. Example: 2026-10-01T00:00:00Z"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Optional provider id, e.g. openai"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "status",
+              "deprecations",
+              "model_retirement",
+              "pricing"
+            ],
+            "description": "Optional change type filter"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max items, default 100, max 500"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Recent API changes",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_providers",
+      "title": "List tracked API providers",
+      "description": "List the ~40 AI and developer API providers Upstream tracks with their current state (operational/degraded/outage) and checked_at. Use to find the right provider id for check_api_status, or for a quick all-providers health overview. Free.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "List providers",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_digest",
+      "title": "Daily AI/dev API breaking-changes digest",
+      "description": "Daily digest (free) of AI/dev API incidents, model deprecations/retirements, pricing-page changes and breaking MCP server changes. Use for a once-a-day catch-up instead of polling. Example: {} for the latest, or {\"date\":\"2026-10-14\"}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "YYYY-MM-DD; omit for the latest issue"
+          }
+        }
+      },
+      "annotations": {
+        "title": "Daily digest",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "resources": [],
+  "prompts": []
+}
