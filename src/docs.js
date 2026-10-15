@@ -33,6 +33,11 @@ Network: ${env.X402_NETWORK} (currently Base Sepolia testnet). Unpaid calls over
 - MCP tool: get_digest {date?}
 - Published daily at 12:00 UTC; combines Upstream (AI/dev API incidents, model deprecations/retirements, pricing-page changes) with Toolweather (breaking MCP tool changes, servers down/back, broken OAuth logins).
 
+## Legal
+- Terms of Service: https://upstream-api.pages.dev/terms
+- Privacy Policy: https://upstream-api.pages.dev/privacy
+- Contact: toolweather@mail.grokbot.com (operator: Toolweather, Mexico)
+
 ## Notes
 - Data comes from official public status pages and docs. "unknown" means our check failed, not that the provider is down.
 - Responses include a "sponsored" field, reserved and always null for now. No ads.

@@ -18,6 +18,8 @@ const enc = new TextEncoder();
 const hex = (b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 const sha = async (s) => hex(await crypto.subtle.digest("SHA-256", enc.encode(s)));
 const ipOf = (req) => req.headers.get("cf-connecting-ip") || "0.0.0.0";
+// privacy: raw IPs are never stored; only a hash salted with a secret and the UTC day (so hashes cannot be linked across days)
+const ipHash = (env, scope, req) => sha(`${scope}|${today()}|${env.SALT || env.ADMIN_TOKEN}|${ipOf(req)}`);
 
 // ---------- x402 (lazy per isolate; PAY_TO / network / facilitator come from env so mainnet is a config change) ----------
 let X = null;
@@ -52,7 +54,7 @@ async function takeFree(env, c) {
     if (used < lim) { await env.DB.prepare("UPDATE keys SET day=?, used=? WHERE key_hash=?").bind(d, used + 1, kr.key_hash).run(); return { free: true, plan: "free_key", remaining: lim - used - 1 }; }
     return { free: false, plan: "free_key", remaining: 0 };
   }
-  const ih = await sha("anon:" + ipOf(c.req.raw)), lim = +env.FREE_ANON_DAILY;
+  const ih = await ipHash(c.env, "anon", c.req.raw), lim = +env.FREE_ANON_DAILY;
   const r = await env.DB.prepare("INSERT INTO anon(ip_hash,day,used) VALUES(?,?,1) ON CONFLICT(ip_hash,day) DO UPDATE SET used=used+1 WHERE used<? RETURNING used").bind(ih, d, lim).first();
   return r ? { free: true, plan: "anonymous", remaining: lim - r.used } : { free: false, plan: "anonymous", remaining: 0 };
 }
@@ -286,7 +288,7 @@ app.get("/x402/model/:id{.+}", payOnly, async (c) => { const r = await getModel(
 app.get("/providers", async (c) => { const r = await listProviders(c.env); return c.json(r.body, 200, { "cache-control": "max-age=60" }); });
 
 app.post("/v1/keys", async (c) => {
-  const env = c.env, ih = await sha("key:" + ipOf(c.req.raw)), d = today();
+  const env = c.env, ih = await ipHash(env, "key", c.req.raw), d = today();
   const mine = await env.DB.prepare("SELECT COUNT(*) n FROM keys WHERE ip_hash=? AND created_at>=?").bind(ih, d).first();
   const all = await env.DB.prepare("SELECT COUNT(*) n FROM keys WHERE created_at>=?").bind(d).first();
   if (mine.n >= 3 || all.n >= 300) return c.json({ error: "rate_limited", detail: "Max 3 new keys per network per day. You can still use the anonymous allowance." }, 429);
@@ -339,7 +341,7 @@ app.get("/digest/feed.xml", async (c) => c.body(atom((await c.env.DB.prepare("SE
 app.post("/digest/subscribe", async (c) => {
   let email; const ct = c.req.header("content-type") || "";
   if (ct.includes("json")) { try { email = (await c.req.json()).email; } catch {} } else { const f = await c.req.parseBody(); email = f.email; }
-  const r = await subscribe(c.env, email, await sha("sub:" + ipOf(c.req.raw)), sha, new URL(c.req.url).origin);
+  const r = await subscribe(c.env, email, await ipHash(c.env, "sub", c.req.raw), sha, new URL(c.req.url).origin);
   if (!ct.includes("json") && (c.req.header("accept") || "").includes("text/html")) return c.redirect(SITE + "/digest/?subscribed=" + (r.code === 200 ? "1" : "0"), 303);
   return c.json(r.body, r.code);
 });
