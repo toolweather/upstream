@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS source_daily (day TEXT NOT NULL, src TEXT NOT NULL, tool TEXT NOT NULL, outcome TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, src, tool, outcome));
