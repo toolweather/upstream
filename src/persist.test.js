@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PAGES } from "./providers.js";
 import {
-  CRON_MS, cronPlan, planStatusWrites, statusWriteNeeded, pageWriteNeeded, pageErrorWriteNeeded,
+  CRON_MS, cronPlan, planStatusWrites, statusWriteNeeded, pageWriteNeeded, pageErrorWriteNeeded, pagePersistPlan,
   modelWriteNeeded, metaWriteNeeded, laterIso, parseProbe, mergePageProbe, modelSeenAt, pageIdForSource, snapshotUnchanged,
+  docAlternateUrl, isMarkdownBody, docReadError,
 } from "./persist.js";
 
 const t = "2026-10-15T12:00:00.000Z";
@@ -78,6 +79,37 @@ test("page and model rows are skipped when content matches", () => {
   assert.equal(modelWriteNeeded(prev, next), false);
   assert.equal(modelWriteNeeded(prev, { ...next, status: "retired" }), true);
   assert.equal(modelWriteNeeded(null, next), true);
+});
+
+test("unchanged page still plans a checked_at touch, not a skipped read", () => {
+  const old = { hash: "abc", error: null };
+  assert.equal(pageWriteNeeded(old, "abc"), false);
+  assert.equal(pagePersistPlan(old, "abc", null), "touch");
+  assert.equal(pagePersistPlan(old, "def", null), "content");
+  assert.equal(pagePersistPlan({ hash: "abc", error: "Error: HTTP 403" }, "abc", null), "content");
+  assert.equal(pagePersistPlan(null, "abc", null), "content");
+  assert.equal(pagePersistPlan(old, null, "stale: HTTP 403 from the docs host. Stored copy was not updated."), "touch");
+  assert.equal(pagePersistPlan(null, null, "stale: HTTP 403"), "insert_error");
+});
+
+test("OpenAI 403 falls back to the documented markdown URL", () => {
+  const html = "https://developers.openai.com/api/docs/deprecations";
+  assert.equal(docAlternateUrl(html), html + ".md");
+  assert.equal(docAlternateUrl(html + ".md"), null);
+  assert.equal(docAlternateUrl("https://ai.google.dev/gemini-api/docs/deprecations"), null);
+  assert.equal(docAlternateUrl("https://docs.mistral.ai/models"), null);
+  assert.equal(isMarkdownBody("text/html; charset=utf-8", html), false);
+  assert.equal(isMarkdownBody("text/markdown; charset=utf-8", html + ".md"), true);
+  assert.equal(isMarkdownBody("text/html", html + ".md"), false);
+  assert.equal(isMarkdownBody("", html + ".md"), true);
+  const both = docReadError(403, true);
+  const once = docReadError(403, false);
+  assert.match(both, /^stale: HTTP 403/);
+  assert.match(both, /public \.md page/);
+  assert.match(both, /Stored copy was not updated/);
+  assert.match(once, /docs host/);
+  assert.equal(docReadError(503, false), "HTTP 503");
+  assert.equal(both, docReadError(403, true));
 });
 
 test("meta catalog skips an identical value", () => {

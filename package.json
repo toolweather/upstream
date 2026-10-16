@@ -5,7 +5,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node --test src/persist.test.js"
+    "test": "node --test src/persist.test.js src/models.test.js",
+    "typecheck": "node --check src/index.js && node --check src/persist.js && node --check src/models.js && node --check src/providers.js && node --check src/docs.js && node --check src/digest.js && node --check src/mailer.js"
   },
   "keywords": [],
   "author": "",

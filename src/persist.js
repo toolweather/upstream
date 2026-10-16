@@ -1,6 +1,7 @@
 // Decide which D1 rows to write. Unchanged status/page/model/meta content must not be sent
-// to D1 at all (an ON CONFLICT update still counts as a row write). Freshness for API
-// responses comes from one probe_clock meta row per cron, not from touching every row.
+// to D1 at all (an ON CONFLICT update still counts as a row write). Freshness for status
+// responses comes from one probe_clock meta row per cron. Doc pages also touch checked_at
+// on every read so a stable hash cannot freeze the row clock. That touch is one row.
 import { PAGES } from "./providers.js";
 
 export const CRON_MS = 5 * 60 * 1000;
@@ -71,6 +72,35 @@ export function pageWriteNeeded(old, hash) {
 export function pageErrorWriteNeeded(old, error) {
   if (!old) return true;
   return (old.error || null) !== error;
+}
+// content = rewrite text/hash (and checked_at). touch = checked_at only, one row.
+// insert_error = first time we have seen this page, and the read failed.
+// A matching hash must still touch. Skipping that write is what froze pages.checked_at.
+export function pagePersistPlan(old, hash, error) {
+  if (error) return old ? "touch" : "insert_error";
+  if (pageWriteNeeded(old, hash)) return "content";
+  return "touch";
+}
+// OpenAI documents this: append .md to a docs URL for the public Markdown source.
+export function docAlternateUrl(url) {
+  if (typeof url !== "string") return null;
+  if (!/^https:\/\/developers\.openai\.com\/api\/docs\/[^\s]+$/.test(url)) return null;
+  if (url.endsWith(".md")) return null;
+  return url + ".md";
+}
+export function isMarkdownBody(contentType, url) {
+  const c = String(contentType || "").toLowerCase();
+  if (c.includes("html")) return false;
+  if (c.includes("markdown") || c.startsWith("text/plain")) return true;
+  return /\.md(?:$|\?)/.test(url || "");
+}
+export function docReadError(status, triedAlternate) {
+  if (status === 403 || status === 401) {
+    return triedAlternate
+      ? `stale: HTTP ${status} from OpenAI docs (HTML and the public .md page). Stored copy was not updated.`
+      : `stale: HTTP ${status} from the docs host. Stored copy was not updated.`;
+  }
+  return "HTTP " + status;
 }
 export function modelWriteNeeded(prev, next) {
   if (!prev) return true;
