@@ -4,13 +4,13 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { PROVIDERS, PAGES } from "./providers.js";
-import { pageTokens, parseModels } from "./models.js";
+import { pageTokens, parseModels, markdownTokens, textFromTokens } from "./models.js";
 import { twSnapshot, buildDigest, saveDigest, digestOut, atom, subscribe, confirmOrUnsub, enqueueDigest } from "./digest.js";
 import { drainOutbox, mailReady } from "./mailer.js";
 import { LLMS, openapi, SITE } from "./docs.js";
-import { STATUS_FRESH_SECONDS, cronPlan, planStatusWrites, pageWriteNeeded, pageErrorWriteNeeded, modelWriteNeeded, metaWriteNeeded, parseProbe, mergePageProbe, laterIso, modelSeenAt, pageIdForSource } from "./persist.js";
+import { STATUS_FRESH_SECONDS, cronPlan, planStatusWrites, pagePersistPlan, modelWriteNeeded, metaWriteNeeded, parseProbe, mergePageProbe, laterIso, modelSeenAt, pageIdForSource, docAlternateUrl, isMarkdownBody, docReadError } from "./persist.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const PRICES = { status: "$0.003", changes: "$0.01", model: "$0.003", watch: "$0.05" };
 const PBY = Object.fromEntries(PROVIDERS.map((p) => [p.id, p]));
 const now = () => new Date().toISOString();
@@ -123,14 +123,20 @@ async function getModel(env, id) {
     : st === "deprecated" ? `${m} is DEPRECATED${info.shutdown_date ? ", shutdown " + info.shutdown_date : ""}. Plan migration to ${rep || "a current model from the same provider"}.`
     : st === "active" ? `${m} is active with no announced shutdown. Safe to keep using.`
     : `${m} is not listed on any tracked deprecation page. Probably fine, but not confirmed${sugg.length ? "; see did_you_mean" : ""}.`;
-  const clock = rows.length ? await loadProbe(env) : null;
+  const urls = [...new Set(rows.map((r) => r.source).filter(Boolean))];
+  const [clock, pageErrRows] = rows.length ? await Promise.all([
+    loadProbe(env),
+    urls.length ? env.DB.prepare(`SELECT url,error FROM pages WHERE url IN (${urls.map(() => "?").join(",")})`).bind(...urls).all() : { results: [] },
+  ]) : [null, { results: [] }];
+  const pageErrs = Object.fromEntries((pageErrRows.results || []).map((r) => [r.url, r.error || null]));
   const seenOf = (r) => modelSeenAt(r.seen_at, clock?.probe.pages[pageIdForSource(r.source)], r.model);
   const seen = best ? seenOf(best) : null;
+  const pageErr = best ? pageErrs[best.source] || null : null;
   return { code: 200, body: { summary, verdict: st, recommended_action: st === "retired" ? "switch_now" : st === "deprecated" ? "plan_migration" : st === "active" ? "keep_using" : "verify_with_provider",
-    checked_at: now(), freshness: { data_as_of: seen, age_seconds: seen ? Math.round((Date.now() - Date.parse(seen)) / 1000) : null, note: "deprecation pages are re-read every few hours" },
+    checked_at: now(), freshness: { data_as_of: seen, age_seconds: seen ? Math.round((Date.now() - Date.parse(seen)) / 1000) : null, source_error: pageErr || undefined, note: pageErr ? "Stored copy is stale: " + pageErr : "deprecation pages are re-read about every 45 minutes" },
     model: m, status: st,
     shutdown_date: info.shutdown_date || null, deprecated_on: info.deprecated_on || null, replacement: info.replacement || null,
-    evidence: rows.map((r) => ({ provider: r.provider, status: r.status, ...JSON.parse(r.dates || "{}"), row: r.snippet, source: r.source, seen_at: seenOf(r) })),
+    evidence: rows.map((r) => ({ provider: r.provider, status: r.status, ...JSON.parse(r.dates || "{}"), row: r.snippet, source: r.source, seen_at: seenOf(r), source_error: pageErrs[r.source] || undefined })),
     did_you_mean: sugg.length ? sugg : undefined, on_openrouter: orIds?.length ? orIds : undefined,
     states: "active = the provider's page explicitly lists it as active or with no shutdown date; deprecated = explicitly deprecated, shutdown in the future; retired = shutdown date has passed; unknown = not explicitly listed on any tracked deprecation page (not a guarantee it is live).",
     sponsored: null } };
@@ -141,6 +147,26 @@ async function fetchT(url, ms = 8000, init = {}) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
   try { return await fetch(url, { ...init, signal: ac.signal, headers: { "user-agent": "UpstreamBot/0.1 (+https://github.com/toolweather/upstream)", ...(init.headers || {}) } }); } finally { clearTimeout(t); }
 }
+async function discardBody(r) { try { if (r.body?.cancel) await r.body.cancel(); else await r.arrayBuffer(); } catch {} }
+function docFail(message) { const e = new Error(message); e.docMessage = message; return e; }
+// HTML first. On 401/403 from OpenAI docs, retry the public Markdown URL they document
+// (same path + `.md`). cache:no-store so a CDN HIT is not treated as a fresh re-read.
+async function readDoc(url) {
+  const r = await fetchT(url, 15000, { cache: "no-store", headers: { accept: "text/html" } });
+  if (r.ok) return { response: r, markdown: isMarkdownBody(r.headers.get("content-type"), url), url };
+  const status = r.status;
+  await discardBody(r);
+  const alt = (status === 403 || status === 401) ? docAlternateUrl(url) : null;
+  if (alt) {
+    const md = await fetchT(alt, 15000, { cache: "no-store", headers: { accept: "text/markdown, text/plain;q=0.9" } });
+    if (md.ok) return { response: md, markdown: isMarkdownBody(md.headers.get("content-type"), alt), url: alt };
+    await discardBody(md);
+    throw docFail(docReadError(status, true));
+  }
+  if (status === 403 || status === 401) throw docFail(docReadError(status, false));
+  throw new Error("HTTP " + status);
+}
+const pageTouch = (env, pg, t, error) => env.DB.prepare("UPDATE pages SET checked_at=?, error=? WHERE id=?").bind(t, error, pg.id);
 async function checkProvider(p) {
   try {
     if (p.type === "sp") {
@@ -189,15 +215,25 @@ async function pageText(resp) {
 }
 async function collectPage(env, pg, t) {
   try {
-    const r = await fetchT(pg.url, 15000, { headers: { accept: "text/html" } });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    const got = await readDoc(pg.url);
     const isModels = pg.kind === "deprecations";
-    const [text, models] = await Promise.all([pageText(isModels ? r.clone() : r), isModels ? pageTokens(r).then((tk) => parseModels(tk, pg, today())) : null]);
+    let text, models;
+    if (got.markdown) {
+      const tok = markdownTokens(await got.response.text());
+      text = textFromTokens(tok);
+      if (text.length < 40) throw docFail("stale: markdown source was empty. Stored copy was not updated.");
+      models = isModels ? parseModels(tok, pg, today()) : null;
+    } else {
+      const r = got.response;
+      [text, models] = await Promise.all([pageText(isModels ? r.clone() : r), isModels ? pageTokens(r).then((tk) => parseModels(tk, pg, today())) : null]);
+    }
     const h = await sha(text);
     const old = await env.DB.prepare("SELECT hash,text,error FROM pages WHERE id=?").bind(pg.id).first();
     const st = [];
     const events = [];
-    if (pageWriteNeeded(old, h)) st.push(env.DB.prepare("INSERT INTO pages VALUES(?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,text=excluded.text,checked_at=excluded.checked_at,changed_at=CASE WHEN pages.hash=excluded.hash THEN pages.changed_at ELSE excluded.changed_at END,error=NULL").bind(pg.id, pg.provider, pg.url, h, text.slice(0, 900000), t, t));
+    const plan = pagePersistPlan(old, h, null);
+    if (plan === "content") st.push(env.DB.prepare("INSERT INTO pages VALUES(?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,text=excluded.text,checked_at=excluded.checked_at,changed_at=CASE WHEN pages.hash=excluded.hash THEN pages.changed_at ELSE excluded.changed_at END,error=NULL").bind(pg.id, pg.provider, pg.url, h, text.slice(0, 900000), t, t));
+    else st.push(pageTouch(env, pg, t, null));
     if (old?.text && old.hash !== h) {
       const a = new Set(old.text.split("\n")), b = new Set(text.split("\n"));
       const added = [...b].filter((l) => !a.has(l)), removed = [...a].filter((l) => !b.has(l));
@@ -216,9 +252,12 @@ async function collectPage(env, pg, t) {
     for (const e of events.slice(0, 50)) st.push(changeStmt(env, e));
     return { statements: st, events, pageState: { at: t, ok_at: t, ...(models ? { models: [...models.keys()].sort() } : {}) } };
   } catch (e) {
-    const err = String(e).slice(0, 200);
+    const err = (e?.docMessage || String(e)).slice(0, 200);
     const old = await env.DB.prepare("SELECT error FROM pages WHERE id=?").bind(pg.id).first();
-    const st = pageErrorWriteNeeded(old, err) ? [env.DB.prepare("INSERT INTO pages(id,provider,url,checked_at,error) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,error=excluded.error").bind(pg.id, pg.provider, pg.url, t, err)] : [];
+    const plan = pagePersistPlan(old, null, err);
+    const st = plan === "insert_error"
+      ? [env.DB.prepare("INSERT INTO pages(id,provider,url,checked_at,error) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,error=excluded.error").bind(pg.id, pg.provider, pg.url, t, err)]
+      : [pageTouch(env, pg, t, err)];
     return { statements: st, events: [], pageState: { at: t } };
   }
 }
@@ -372,8 +411,13 @@ app.post("/admin/run", async (c) => {
   else if (what === "drain") return c.json(await drainOutbox(c.env));
   else if (what === "tw") return c.json(await twSnapshot(c.env));
   else if (what === "digest") { const d = await buildDigest(c.env, c.req.query("date") || today()); if (c.req.query("save") === "1") await saveDigest(c.env, d); return c.json(d); }
-  else if (what === "tokens") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); return c.json((await pageTokens(r)).filter((t) => t.t !== "p" && t.t !== "li").slice(0, 400)); }
-  else if (what === "parse") { const pg = PAGES.find((p) => p.id === c.req.query("page")); const r = await fetchT(pg.url, 15000); const m = await parseModels(await pageTokens(r), pg, today()); return c.json(Object.fromEntries(m)); }
+  else if (what === "tokens" || what === "parse") {
+    const pg = PAGES.find((p) => p.id === c.req.query("page")); if (!pg) return c.json({ error: "unknown" }, 400);
+    const got = await readDoc(pg.url);
+    const tok = got.markdown ? markdownTokens(await got.response.text()) : await pageTokens(got.response);
+    if (what === "tokens") return c.json(tok.filter((t) => t.t !== "p" && t.t !== "li").slice(0, 400));
+    return c.json(Object.fromEntries(parseModels(tok, pg, today())));
+  }
   else {
     const pg = PAGES.find((p) => p.id === what); if (!pg) return c.json({ error: "unknown" }, 400);
     const t = now(), clock = await loadProbe(c.env), page = await collectPage(c.env, pg, t);
@@ -435,8 +479,9 @@ export default {
   fetch: app.fetch,
   async scheduled(ev, env, ctx) {
     // Free plan: 50 external subrequests per invocation. One fetch per provider, plus a second
-    // for Google AI, plus one docs page = 42. All providers are checked every run so freshness
-    // stays on the 5-minute cron. Unchanged rows are not written; probe_clock is the one summary row.
+    // for Google AI, plus one docs page = 42 (43 if OpenAI HTML 403s and we retry .md).
+    // All providers are checked every run. Unchanged status/text/model rows are not rewritten.
+    // Each doc read still touches that page's checked_at (one row) and probe_clock.
     const plan = cronPlan(ev.scheduledTime), t = now(), clock = await loadProbe(env);
     const status = await collectStatus(env, t);
     // The noon digest already walks the Toolweather snapshot. Skip the docs-page parse on that

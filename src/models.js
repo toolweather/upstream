@@ -104,3 +104,84 @@ export function parseModels(tok, pg, today) {
   }
   return res;
 }
+
+function stripInline(s) {
+  return String(s || "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/[\u2010-\u2013]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function splitRow(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(stripInline);
+}
+function isSep(line) {
+  return /^\s*\|?[\s|:-]+\s*$/.test(line) && line.includes("-");
+}
+// Official Markdown for a docs page (OpenAI serves this at the same path plus `.md`).
+// Tokens match pageTokens so parseModels does not need a second grammar.
+export function markdownTokens(md) {
+  const tok = [], para = [];
+  const lines = String(md || "").replace(/\r\n/g, "\n").split("\n");
+  const flushP = () => {
+    if (!para.length) return;
+    const s = stripInline(para.join(" "));
+    if (s) tok.push({ t: "p", s });
+    para.length = 0;
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*<!--/.test(line)) { i++; continue; }
+    const hm = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (hm) { flushP(); tok.push({ t: "h", l: hm[1].length, s: stripInline(hm[2]) }); i++; continue; }
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      flushP();
+      tok.push({ t: "table" });
+      const header = splitRow(line);
+      tok.push({ t: "row", cells: header.map((s) => ({ s, th: true })) });
+      i += 2;
+      while (i < lines.length && /^\s*\|/.test(lines[i]) && !isSep(lines[i])) {
+        let parts = splitRow(lines[i]);
+        // Some OpenAI tables insert an alias column before the substitute, so the row
+        // has one more cell than the header. Keep the model ids and use the last cell
+        // as the substitute column the header names.
+        if (header.length >= 2 && parts.length === header.length + 1) {
+          const alias = parts[header.length - 1];
+          const modelAt = header.length - 2;
+          parts = [...parts.slice(0, header.length - 1), parts[parts.length - 1]];
+          if (alias) parts[modelAt] = `${parts[modelAt]}, ${alias}`;
+        }
+        const cells = parts.map((s) => ({ s, th: false }));
+        if (cells.some((c) => c.s)) tok.push({ t: "row", cells });
+        i++;
+      }
+      tok.push({ t: "endtable" });
+      continue;
+    }
+    const lm = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (lm) { flushP(); tok.push({ t: "li", s: stripInline(lm[1]) }); i++; continue; }
+    if (!line.trim()) { flushP(); i++; continue; }
+    para.push(line.trim());
+    i++;
+  }
+  flushP();
+  return tok;
+}
+export function textFromTokens(tok) {
+  const lines = [];
+  for (const t of tok || []) {
+    if (t.t === "h" || t.t === "p" || t.t === "li") { if (t.s) lines.push(t.s); }
+    else if (t.t === "row") {
+      const s = t.cells.map((c) => c.s).filter(Boolean).join(" | ");
+      if (s) lines.push(s);
+    }
+  }
+  return lines.filter((l) => l.length > 2 && l.length < 1500).join("\n");
+}
