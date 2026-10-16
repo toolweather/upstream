@@ -1,3 +1,4 @@
+import { withSources } from "./sources.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
@@ -475,8 +476,15 @@ app.get("/", (c) => c.json({ name: "Upstream", what: "Is the AI/dev API your age
   over_quota: { protocol: "x402 v2", network: c.env.X402_NETWORK, prices_usdc: PRICES }, docs: ["/llms.txt", "/openapi.json", SITE],
   digest: { latest: "/digest/latest", list: "/digest", by_date: "/digest/:date", feed: "/digest/feed.xml", page: SITE + "/digest/" }, endpoints: ["GET /providers", "GET /status/:provider", "GET /changes?since=&provider=&kind=", "GET /model/:id", "POST /v1/keys", "POST /v1/watches", "POST /mcp", "GET /health"] }));
 
+const UP_REST = [
+  [/^GET \/(x402\/)?status\/.+/, "check_api_status"],
+  [/^GET \/(x402\/)?changes$/, "list_recent_api_changes"],
+  [/^GET \/(x402\/)?model\/.+/, "check_model_deprecation"],
+  [/^GET \/providers$/, "list_providers"],
+  [/^GET \/digest\/latest$/, "get_digest"],
+];
 export default {
-  fetch: app.fetch,
+  fetch: withSources((req, env, ctx) => app.fetch(req, env, ctx), UP_REST),
   async scheduled(ev, env, ctx) {
     // Free plan: 50 external subrequests per invocation. One fetch per provider, plus a second
     // for Google AI, plus one docs page = 42 (43 if OpenAI HTML 403s and we retry .md).

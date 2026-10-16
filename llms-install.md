@@ -9,7 +9,7 @@ Add this to your MCP settings (e.g. Cline `cline_mcp_settings.json`):
   "mcpServers": {
     "upstream": {
       "type": "streamableHttp",
-      "url": "https://upstream.toolweather.workers.dev/mcp"
+      "url": "https://upstream.toolweather.workers.dev/mcp?src=site"
     }
   }
 }

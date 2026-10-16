@@ -7,3 +7,4 @@ CREATE TABLE IF NOT EXISTS keys (key_hash TEXT PRIMARY KEY, created_at TEXT, ip_
 CREATE TABLE IF NOT EXISTS anon (ip_hash TEXT, day TEXT, used INTEGER DEFAULT 0, PRIMARY KEY(ip_hash, day));
 CREATE TABLE IF NOT EXISTS watches (id TEXT PRIMARY KEY, key_hash TEXT, provider TEXT, url TEXT, secret TEXT, paid INTEGER DEFAULT 0, expires_at TEXT, fails INTEGER DEFAULT 0, active INTEGER DEFAULT 1, created_at TEXT);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS source_daily (day TEXT NOT NULL, src TEXT NOT NULL, tool TEXT NOT NULL, outcome TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, src, tool, outcome));

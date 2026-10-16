@@ -9,7 +9,7 @@ Live status and breaking-change feed for the AI and developer APIs agents depend
 
 - Site: https://upstream-api.pages.dev
 - API: https://upstream.toolweather.workers.dev ([llms.txt](https://upstream.toolweather.workers.dev/llms.txt), [OpenAPI](https://upstream.toolweather.workers.dev/openapi.json))
-- MCP: `https://upstream.toolweather.workers.dev/mcp`
+- MCP: `https://upstream.toolweather.workers.dev/mcp?src=site`
 
 ## Free tier
 500 calls/day with a free key (`POST /v1/keys`), 50/day anonymous, 1 free change-alert webhook. Above that, pay per call with x402 (Base mainnet, real USDC): `/status/:provider` $0.003, `/model/:id` $0.003, `/changes` $0.01, extra watch $0.05/30 days.
